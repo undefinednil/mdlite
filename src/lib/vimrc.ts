@@ -9,6 +9,7 @@ interface VimMapping {
 
 export interface VimSettings {
   source: string
+  sourceKey: string
   exists: boolean
   leader: string
   options: Record<string, string | number | boolean>
@@ -23,6 +24,7 @@ export interface VimSettings {
 
 export const defaultVimSettings: VimSettings = {
   source: '',
+  sourceKey: '',
   exists: false,
   leader: '\\',
   options: {},
@@ -147,10 +149,19 @@ function splitArgs(input: string): string[] {
   return out
 }
 
+function hashText(text: string): string {
+  let value = 0
+  for (let index = 0; index < text.length; index++) {
+    value = (value * 31 + text.charCodeAt(index)) | 0
+  }
+  return Math.abs(value).toString(36)
+}
+
 function parseVimrc(text: string, source = ''): VimSettings {
   const settings: VimSettings = {
     ...defaultVimSettings,
     source,
+    sourceKey: source ? `${source}:${text.length}:${hashText(text)}` : '',
     exists: Boolean(source),
     options: {},
     mappings: [],
@@ -263,8 +274,8 @@ function pickNumber(options: Record<string, string | number | boolean>, names: s
 
 let cached: VimSettings | null = null
 
-export async function loadVimSettings(): Promise<VimSettings> {
-  if (cached) return cached
+export async function loadVimSettings(force = false): Promise<VimSettings> {
+  if (cached && !force) return cached
   try {
     const data = await api.vimrc()
     cached = parseVimrc(data.content ?? '', data.exists ? (data.path ?? '~/.vimrc') : '')

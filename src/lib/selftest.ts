@@ -66,6 +66,16 @@ export async function runSelfTest(): Promise<void> {
     return { path: images[0], naturalWidth: loaded }
   })
 
+  await check('settings', async () => {
+    const data = await api.settings()
+    return {
+      path: data.path,
+      vimEnabled: data.settings.vimEnabled,
+      vimrcMode: data.settings.vimrc.mode,
+      shortcuts: Object.keys(data.settings.shortcuts).length,
+    }
+  })
+
   await check('vimrc', async () => {
     const data = await api.vimrc()
     return { exists: data.exists, chars: data.content.length }

@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { FileDoc, RootEntry, TreeNode } from '../shared/types'
+import type { AppSettings, FileDoc, RootEntry, TreeNode } from '../shared/types'
 import { ApiError, api } from './api'
 import { Editor } from './components/Editor'
 import { FileTree } from './components/FileTree'
@@ -11,9 +11,11 @@ import { Palette, type PaletteMode } from './components/Palette'
 import { SettingsView } from './components/SettingsView'
 import { DialogHost } from './components/DialogHost'
 import { askConfirm } from './lib/dialogs'
+import { defaultAppSettings } from './lib/settings'
 import logoUrl from './assets/logo.png'
 import { ancestors, baseName, canEdit, dirname, fileKind, formatKind } from './lib/paths'
 import { defaultVimSettings, loadVimSettings, type VimSettings } from './lib/vimrc'
+import { matchesCommand } from './lib/shortcuts'
 import { applyVimSettings } from './lib/vim'
 
 const ExcalidrawView = lazy(() => import('./components/ExcalidrawView'))
@@ -79,6 +81,9 @@ export default function App() {
   const [activeRootId, setActiveRootId] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [vim, setVim] = useState<VimSettings>(defaultVimSettings)
+  const [settings, setSettings] = useState<AppSettings>(defaultAppSettings)
+  const [settingsPath, setSettingsPath] = useState('')
+  const [binaryDoc, setBinaryDoc] = useState(false)
   const [scratch, setScratch] = useState<{ name: string; content: string } | null>(null)
   const [dragging, setDragging] = useState(false)
 
@@ -112,8 +117,10 @@ export default function App() {
   const treeRef = useRef(tree)
   treeRef.current = tree
 
-  const stateRef = useRef({ selected, dirty, doc, mode })
-  stateRef.current = { selected, dirty, doc, mode }
+  const stateRef = useRef({ selected, dirty, doc, mode, binaryDoc })
+  stateRef.current = { selected, dirty, doc, mode, binaryDoc }
+
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
 
   const files = useMemo(() => collectFiles(tree), [tree])
 
@@ -130,10 +137,20 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void loadVimSettings().then((settings) => {
-      applyVimSettings(settings)
-      setVim(settings)
-    })
+    void (async () => {
+      let stored = defaultAppSettings
+      try {
+        const data = await api.settings()
+        stored = data.settings
+        setSettings(data.settings)
+        setSettingsPath(data.path)
+      } catch {
+        stored = defaultAppSettings
+      }
+      const vimSettings = await loadVimSettings(true)
+      applyVimSettings(vimSettings, stored.vimEnabled)
+      setVim(vimSettings)
+    })()
     void refreshInfo()
   }, [refreshInfo])
 
@@ -154,6 +171,7 @@ export default function App() {
 
   useEffect(() => {
     if (scratch) return
+    setBinaryDoc(false)
     if (!selected) {
       setDoc(null)
       setDraft('')
@@ -184,16 +202,29 @@ export default function App() {
         setStatus('ready')
         setRecents((prev) => [result.path, ...prev.filter((path) => path !== result.path)].slice(0, 5))
       })
-      .catch((err: Error) => {
+      .catch((err: ApiError) => {
         if (id !== requestRef.current) return
+        if (err.kind === 'binary') {
+          setDoc({ path: selected, content: '', mtime: node?.mtime ?? 0, size: node?.size ?? 0 })
+          setDraft('')
+          setConflict(null)
+          setBinaryDoc(true)
+          setStatus('ready')
+          return
+        }
         setError(err.message)
         setStatus('error')
       })
   }, [selected, scratch])
 
   useEffect(() => {
-    void getCurrentWindow().setTitle(activePath ? `${baseName(activePath)} — mdlite` : 'mdlite')
-  }, [activePath])
+    const title = showSettings
+      ? 'Settings — mdlite'
+      : activePath
+        ? `${baseName(activePath)} — mdlite`
+        : 'mdlite'
+    void getCurrentWindow().setTitle(title)
+  }, [activePath, showSettings])
 
   const activeScroller = useCallback((): HTMLElement | null => {
     const body = scrollRef.current
@@ -425,6 +456,20 @@ export default function App() {
     setShowSettings(false)
   }, [])
 
+  const updateSettings = useCallback((next: AppSettings) => {
+    setSettings(next)
+    saveChainRef.current = saveChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const data = await api.saveSettings(next)
+        setSettingsPath(data.path)
+        const vimSettings = await loadVimSettings(true)
+        applyVimSettings(vimSettings, next.vimEnabled)
+        setVim(vimSettings)
+      })
+      .catch((err: Error) => setError(err.message))
+  }, [])
+
   const focusMain = useCallback(() => {
     const folder = scrollRef.current?.querySelector<HTMLElement>('.folder-view')
     if (folder) {
@@ -449,62 +494,61 @@ export default function App() {
       const target = event.target instanceof Element ? event.target : null
       const typing = Boolean(target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor'))
       const mod = event.metaKey || event.ctrlKey
-      const key = event.key.toLowerCase()
+      const plain = !mod && !event.altKey
 
-      if (!mod) {
+      if (plain) {
         if (event.defaultPrevented) return
         if (event.key === 'Escape') {
           setPalette(null)
           return
         }
-        if (!typing && stateRef.current.doc && stateRef.current.mode === 'view' && (key === 'j' || key === 'k')) {
-          const element = activeScroller()
-          if (element) {
+        if (!typing && stateRef.current.doc && stateRef.current.mode === 'view') {
+          const scroll = (direction: number) => {
+            const element = activeScroller()
+            if (!element) return false
             event.preventDefault()
-            element.scrollBy({ top: key === 'j' ? 96 : -96 })
+            element.scrollBy({ top: direction * 96 })
+            return true
           }
+          if (matchesCommand(settings.shortcuts, 'tree.down', event) && scroll(1)) return
+          if (matchesCommand(settings.shortcuts, 'tree.up', event) && scroll(-1)) return
         }
-        return
+        if (typing) return
       }
 
-      if (key === 'h') {
+      if (matchesCommand(settings.shortcuts, 'app.focusTree', event)) {
         event.preventDefault()
         treeFocusRef.current?.()
         return
       }
-      if (key === 'l') {
+      if (matchesCommand(settings.shortcuts, 'app.focusMain', event)) {
         event.preventDefault()
         focusMain()
         return
       }
-      if (key === 'v' && event.shiftKey) {
+      if (matchesCommand(settings.shortcuts, 'app.toggleEdit', event)) {
         event.preventDefault()
         if (stateRef.current.doc) toggleMode()
         return
       }
-      if (key === 'e' && !event.shiftKey) {
+      if (matchesCommand(settings.shortcuts, 'app.findFile', event)) {
         event.preventDefault()
         setPalette('files')
         return
       }
-      if (key === 'e' && event.shiftKey) {
-        event.preventDefault()
-        if (stateRef.current.doc) toggleMode()
-        return
-      }
-      if (key === 'g') {
+      if (matchesCommand(settings.shortcuts, 'app.searchContent', event)) {
         event.preventDefault()
         setPalette('content')
         return
       }
-      if (key === 's') {
+      if (matchesCommand(settings.shortcuts, 'app.save', event)) {
         event.preventDefault()
         void save()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [save, toggleMode, focusMain, activeScroller])
+  }, [save, toggleMode, focusMain, activeScroller, settings.shortcuts])
 
   const openScratchFile = useCallback(async (file: File) => {
     if (file.size > 4_000_000) {
@@ -512,12 +556,29 @@ export default function App() {
       return
     }
     const supported = /\.(md|markdown|mdx|txt|json|jsonc|ya?ml|toml|ini|csv|tsv|sql|sh|bash|zsh|py|go|php|ts|tsx|js|jsx|css|html|xml|svg|excalidraw|diff|log)$/i
-    if (!supported.test(file.name)) {
+    const hasExtension = /\.[^./\\]+$/.test(file.name)
+    if (hasExtension && !supported.test(file.name)) {
       setError('Unsupported file type')
       return
     }
-    const content = await file.text()
+    let content: string
+    if (hasExtension) {
+      content = await file.text()
+    } else {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      if (bytes.includes(0)) {
+        setError('Unsupported file type')
+        return
+      }
+      try {
+        content = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      } catch {
+        setError('Unsupported file type')
+        return
+      }
+    }
     setSelected(null)
+    setBinaryDoc(false)
     setScratch({ name: file.name, content })
     setDoc({ path: file.name, content, mtime: 0, size: file.size })
     setDraft(content)
@@ -599,7 +660,7 @@ export default function App() {
       setTreeTick((value) => value + 1)
 
       const current = stateRef.current
-      if (!current.selected || !current.doc) return
+      if (!current.selected || !current.doc || current.binaryDoc) return
       if (!paths.includes(current.selected)) return
 
       const type = fileKind(current.selected)
@@ -678,8 +739,10 @@ export default function App() {
   ) : null
 
   const showEditor =
-    doc !== null && (kind === 'text' || (mode === 'edit' && (kind === 'markdown' || kind === 'svg')))
-  const showFloating = doc !== null && (kind === 'markdown' || kind === 'svg')
+    doc !== null &&
+    !binaryDoc &&
+    (kind === 'text' || (mode === 'edit' && (kind === 'markdown' || kind === 'svg')))
+  const showFloating = doc !== null && !binaryDoc && (kind === 'markdown' || kind === 'svg')
 
   const body = (() => {
     if (status === 'loading') return <div className="centered muted">Loading…</div>
@@ -688,6 +751,7 @@ export default function App() {
       return (
         <FolderView
           nodes={tree}
+          shortcuts={settings.shortcuts}
           dir={currentDir}
           rootName={rootName}
           onOpenDir={openDir}
@@ -696,7 +760,7 @@ export default function App() {
       )
     }
 
-    if (kind === 'image' || kind === 'binary') {
+    if (kind === 'image' || kind === 'binary' || binaryDoc) {
       return <MediaView path={doc.path} size={doc.size} />
     }
 
@@ -720,10 +784,13 @@ export default function App() {
     if (showEditor) {
       return (
         <Editor
-          key={`${doc.path}:${vim.source}`}
+          key={`${doc.path}:${vim.sourceKey}:${settings.vimEnabled}`}
           value={draft}
           filePath={doc.path}
           settings={vim}
+          vimEnabled={settings.vimEnabled}
+          wordWrap={settings.wordWrap}
+          shortcuts={settings.shortcuts}
           focusRef={mainFocusRef}
           insertRef={insertTextRef}
           onMedia={insertMedia}
@@ -798,7 +865,7 @@ export default function App() {
             <button type="button" className="icon-btn" title="Search content (⌃G)" onClick={() => setPalette('content')}>
               <span className="material-symbols-rounded">manage_search</span>
             </button>
-            <button type="button" className="icon-btn" title="Root folders" onClick={openSettings}>
+            <button type="button" className="icon-btn" title="Settings" onClick={openSettings}>
               <span className="material-symbols-rounded">settings</span>
             </button>
           </div>
@@ -806,6 +873,7 @@ export default function App() {
 
         <FileTree
           nodes={tree}
+          shortcuts={settings.shortcuts}
           focusRef={treeFocusRef}
           selected={selected}
           currentDir={currentDir}
@@ -837,7 +905,7 @@ export default function App() {
               <span className="crumb" title={activePath}>
                 {activePath}
               </span>
-              <span className="kind-badge">{formatKind(activePath)}</span>
+              <span className="kind-badge">{binaryDoc ? 'Binary' : formatKind(activePath)}</span>
               {scratch && <span className="scratch-badge">temporary</span>}
               {scratch && (
                 <button
@@ -851,13 +919,13 @@ export default function App() {
               )}
               {dirty && <span className="dirty-dot" title="Unsaved changes" />}
               <span className="spacer" />
-              {vim.exists && showEditor && (
+              {settings.vimEnabled && vim.exists && showEditor && (
                 <span
                   className="vim-badge"
                   title={[
                     vim.source,
                     `${vim.mappings.length} mappings · ${vim.applied} lines applied · ${vim.skipped.length} not applicable`,
-                    `tabstop ${vim.tabstop} · shiftwidth ${vim.shiftwidth} · ${vim.expandtab ? 'expandtab' : 'noexpandtab'} · wrap forced on`,
+                    `tabstop ${vim.tabstop} · shiftwidth ${vim.shiftwidth} · ${vim.expandtab ? 'expandtab' : 'noexpandtab'} · ${settings.wordWrap ? 'wrap on' : 'wrap off'}`,
                     vim.skipped.length ? `skipped: ${vim.skipped.slice(0, 6).join(' | ')}` : '',
                   ]
                     .filter(Boolean)
@@ -897,7 +965,7 @@ export default function App() {
               )}
               {savedAt > 0 && <span className="saved-flash">Saved</span>}
               {doc && doc.mtime > 0 && <span className="meta">{formatTime(doc.mtime)}</span>}
-              {doc && (kind === 'markdown' || kind === 'text') && (
+              {doc && !binaryDoc && (kind === 'markdown' || kind === 'text') && (
                 <button
                   type="button"
                   className={`icon-btn copy-btn ${copiedAt > 0 ? 'copied' : ''}`}
@@ -927,9 +995,13 @@ export default function App() {
               roots={roots}
               activeId={activeRootId}
               activePath={rootPath}
+              settings={settings}
+              settingsPath={settingsPath}
+              vim={vim}
               onSwitch={switchRoot}
               onAdd={addRootFolder}
               onRemove={removeRootFolder}
+              onSettingsChange={updateSettings}
               onClose={closeSettings}
             />
           ) : (

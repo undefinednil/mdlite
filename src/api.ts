@@ -1,6 +1,16 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import type { FileDoc, GrepResponse, InfoResponse, RootEntry, SaveResult, TreeNode } from '../shared/types'
+import type {
+  AppSettings,
+  FileDoc,
+  GrepResponse,
+  InfoResponse,
+  RootEntry,
+  SaveResult,
+  SettingsResponse,
+  TreeNode,
+  VimrcResponse,
+} from '../shared/types'
 
 export class ApiError extends Error {
   kind: string
@@ -113,7 +123,11 @@ export const api = {
   restore: (from: string, to: string) =>
     call<string>('restore_entry', { from, to }).then((next) => ({ path: next })),
 
-  vimrc: () => call<{ path: string; exists: boolean; content: string }>('vimrc'),
+  vimrc: () => call<VimrcResponse>('vimrc'),
+
+  settings: () => call<SettingsResponse>('settings_get'),
+
+  saveSettings: (settings: AppSettings) => call<SettingsResponse>('settings_set', { settings }),
 
   subscribeChanges(handler: (paths: string[]) => void): () => void {
     let unlisten: (() => void) | null = null

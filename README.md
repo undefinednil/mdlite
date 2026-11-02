@@ -2,9 +2,17 @@
 
 A desktop app for browsing, searching and editing a folder of Markdown notes. Built with Tauri: the UI is React, the filesystem work is native Rust. No server, no browser tab.
 
+## Docs
+
+- [Features](docs/features.md): what the app does and where its limits are
+- [Tech stack](docs/tech-stack.md): libraries, tools and versions
+- [Architecture](docs/architecture.md): the React and Rust split, commands, storage, security
+- [Development](docs/development.md): setup, checks, release builds, icons, self-test
+- [Troubleshooting](docs/troubleshooting.md): common failures and known limitations
+
 ## Run
 
-Requires Node 20+, Rust (`rustup`), and the Xcode command line tools on macOS (or the MSVC build tools on Windows).
+Requires Node `^20.19.0` or `>=22.12.0`, Rust 1.77+ (`rustup`), and the Xcode command line tools on macOS (or the MSVC build tools on Windows).
 
 ```bash
 npm install
@@ -28,7 +36,7 @@ Other targets: `bundle:win`, `bundle:win:msi`, `bundle:dmg`.
 Windows builds must run on Windows; Tauri does not cross-compile.
 
 1. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload. This provides the linker and resource compiler Rust needs; you do not write any C or C++.
-2. Install Rust from [rustup.rs](https://rustup.rs) and Node 20+.
+2. Install Rust from [rustup.rs](https://rustup.rs) and Node `^20.19.0` or `>=22.12.0`.
 3. Run `npm ci` then `npm run bundle`.
 
 The installer lands in `src-tauri/target/release/bundle/nsis/mdlite_0.1.0_x64-setup.exe`. WebView2 is preinstalled on Windows 10 and 11.
@@ -46,22 +54,27 @@ src-tauri/            Rust backend
   src/files.rs        read, write with mtime conflict, trash, uploads
   src/search.rs       ripgrep wrapper plus a pure-Rust fallback
   src/watch.rs        recursive watcher, debounced, emits fs-change
-  src/state.rs        root folders persisted to ~/.mdlite.json
-  src/lib.rs          17 Tauri commands
+  src/settings.rs     editor settings and shortcut overrides
+  src/state.rs        roots and settings persisted to the OS config folder
+  src/lib.rs          19 Tauri commands
 src/                  React app
   api.ts              the only seam: invoke() calls into Rust
   components/         FileTree, FolderView, MarkdownView, MediaView,
                       ExcalidrawView, Editor, Palette, SettingsView, DialogHost
-  lib/                markdown pipeline, path helpers, vimrc parser
+  lib/                markdown pipeline, path helpers, shortcuts, settings, vimrc parser
 ```
 
 Images and video are served through Tauri's `asset://` protocol, because a webview cannot load `file://`.
 
-## Root folders
+## Settings
 
-Open the gear button in the sidebar to manage roots. "Browse…" opens a native folder picker. Add as many roots as you like, switch between them, and remove entries. The active root determines what the tree, search, editor and file operations act on. The list is stored in `~/.mdlite.json` (`MDLITE_CONFIG` moves it); `MDLITE_ROOT` seeds the first entry.
+Open the gear button in the sidebar to manage roots, editor settings and shortcuts. **Browse…** opens a native folder picker. Add as many roots as you like, switch between them, and remove entries. The active root determines what the tree, search, editor and file operations act on.
+
+Everything is stored in `~/.config/mdlite/mdlite.json` (`%USERPROFILE%\.config\mdlite\mdlite.json` on Windows). An existing `~/.mdlite.json` is imported once and left in place. `MDLITE_CONFIG` moves the file; `MDLITE_ROOT` seeds the first root.
 
 ## Keyboard
+
+Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults.
 
 | Keys | Action |
 |---|---|
@@ -88,13 +101,13 @@ Open the gear button in the sidebar to manage roots. "Browse…" opens a native 
 
 - **Folder browsing:** the main area is a table of the current folder with Name, Kind, Size and Modified columns, sortable by clicking a header. Breadcrumbs sit above it. Clicking a folder in the table or the tree enters it; `j`/`k` move the cursor and `Enter` opens.
 - **Sidebar tree:** shift-click selects a range, `⌘`-click or `Ctrl`-click toggles one row, and `d` moves every selected row to the trash in one step. Plain click clears the selection. Lists the whole vault, loads once and filters client-side. Filtering keeps the tree shape: matching files stay under their folders, and folders with matches open automatically. Sort by name or modified. Filters: path text in `contains` / `glob` / `regex` mode, kind chips (md, code, data, image, draw, other), a modified-date range, and file size buckets.
-- **File types:** Markdown renders with Mermaid and Shiki. Code and text files open straight into the editor with syntax highlighting. Images open in place. Excalidraw drawings open in the full editor (loaded on demand). SVG has view and edit modes. Anything else offers to open it in the default app.
+- **File types:** Markdown renders with Mermaid and Shiki. Code and text files open straight into the editor with syntax highlighting. Files without an extension are opened as text when their content is valid UTF-8; binary files show the card instead. Images open in place. Excalidraw drawings open in the full editor (loaded on demand). SVG has view and edit modes. Anything else offers to open it in the default app.
 - **Temporary files:** drag a file from the desktop onto the window to open it without touching the vault. The header shows a `temporary` badge; `⌃S` exports it instead of writing to disk.
 - **Media:** in the editor, paste or drop an image or video, or use the attach button in the header. Files are saved to an `images/` folder next to the note and inserted as Markdown. Videos render with controls.
 - **Resize in the preview:** drag the corner handle on an image to set its width (saved into the Markdown as `{width=N}`); drag a column edge in a table to size columns (remembered per file).
 - **Copy:** the header copy button copies styled rich text in view mode and the raw Markdown in edit mode.
-- **Editing:** CodeMirror with Vim keybindings and soft wrap.
-- **vimrc:** `~/.vimrc` is read and applied: every mapping (`map`, `noremap`, `nmap`, `nnoremap`, `vmap`, `vnoremap`, `xmap`, `xnoremap`, `omap`, `onoremap`, `imap`, `inoremap`, including `<leader>` and `<silent>`), plus `set` options for tab size, indentation, line numbers and cursor line. `:w`, `:update` and `<C-s>` save. The `vim` badge tooltip lists what was applied.
+- **Editing:** CodeMirror with Vim keybindings. Vim and word wrap can be toggled in Settings → Editor.
+- **Vim:** editor keybindings can be turned off in Settings → Editor. The vimrc source is either `~/.vimrc`, a custom path or text pasted into Settings. Mappings (`map`, `noremap`, `nmap`, `nnoremap`, `vmap`, `vnoremap`, `xmap`, `xnoremap`, `omap`, `onoremap`, `imap`, `inoremap`, including `<leader>` and `<silent>`) and `set` options for tab size, indentation, line numbers and cursor line are applied. `:w`, `:update` and `<C-s>` save. The `vim` badge tooltip lists what was applied.
 - **View and edit share a scroll position:** switching modes keeps your place, measured as a fraction of the document height.
 - **Auto-save:** leaving the editor saves unsaved changes automatically, with the same modification-time conflict check as an explicit save.
 - **Conflicts:** if a file changes on disk while you are editing, the app offers reload or overwrite.

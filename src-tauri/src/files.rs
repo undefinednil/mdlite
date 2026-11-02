@@ -39,7 +39,11 @@ pub fn read_text(root: &Path, rel: &str) -> ApiResult<FileDoc> {
     if metadata.len() > MAX_FILE_BYTES {
         return Err(ApiError::new("too_large", "file is too large to open"));
     }
-    let content = fs::read_to_string(&abs)?;
+    let bytes = fs::read(&abs)?;
+    let content = match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => text,
+        _ => return Err(ApiError::new("binary", "file is not text")),
+    };
     Ok(FileDoc {
         path: rel.to_string(),
         content,
@@ -316,6 +320,24 @@ mod tests {
 
         restore_entry(&root, &trashed, "sub/b.md").unwrap();
         assert!(root.join("sub/b.md").exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_extensionless_text_and_rejects_binary() {
+        let root = scratch();
+        fs::write(root.join("run"), "#!/bin/sh\necho ok\n").unwrap();
+        let doc = read_text(&root, "run").unwrap();
+        assert_eq!(doc.content, "#!/bin/sh\necho ok\n");
+
+        fs::write(root.join("blob"), [0u8, 159u8, 146u8, 150u8]).unwrap();
+        let error = read_text(&root, "blob").unwrap_err();
+        assert_eq!(error.kind, "binary");
+
+        fs::write(root.join("nul"), b"a\0b").unwrap();
+        let error = read_text(&root, "nul").unwrap_err();
+        assert_eq!(error.kind, "binary");
 
         fs::remove_dir_all(&root).ok();
     }
