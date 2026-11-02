@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TreeNode } from '../../shared/types'
 import { formatKind, iconFor, iconTone } from '../lib/paths'
+import { matchesCommand } from '../lib/shortcuts'
 
 type SortKey = 'name' | 'size' | 'mtime'
 
 interface Props {
   nodes: TreeNode[]
+  shortcuts: Record<string, string>
   dir: string
   rootName: string
   onOpenDir: (path: string) => void
@@ -24,7 +26,7 @@ function findNode(nodes: TreeNode[], path: string): TreeNode | null {
   return null
 }
 
-export function FolderView({ nodes, dir, rootName, onOpenDir, onSelect }: Props) {
+export function FolderView({ nodes, shortcuts, dir, rootName, onOpenDir, onSelect }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [ascending, setAscending] = useState(true)
   const [cursor, setCursor] = useState(-1)
@@ -78,22 +80,32 @@ export function FolderView({ nodes, dir, rootName, onOpenDir, onSelect }: Props)
   const onKeyDown = (event: React.KeyboardEvent) => {
     const mod = event.ctrlKey || event.metaKey
     const key = event.key.toLowerCase()
-    if (event.key === 'ArrowDown' || (mod && key === 'n') || (!mod && key === 'j')) {
+    if (event.key === 'ArrowDown' || (mod && key === 'n')) {
       event.preventDefault()
       setCursor((value) => Math.min(entries.length - 1, value + 1))
       return
     }
-    if (event.key === 'ArrowUp' || (mod && key === 'p') || (!mod && key === 'k')) {
+    if (event.key === 'ArrowUp' || (mod && key === 'p')) {
       event.preventDefault()
       setCursor((value) => Math.max(0, value - 1))
       return
     }
-    if (key === 'g' && !mod) {
+    if (matchesCommand(shortcuts, 'tree.down', event)) {
+      event.preventDefault()
+      setCursor((value) => Math.min(entries.length - 1, value + 1))
+      return
+    }
+    if (matchesCommand(shortcuts, 'tree.up', event)) {
+      event.preventDefault()
+      setCursor((value) => Math.max(0, value - 1))
+      return
+    }
+    if (matchesCommand(shortcuts, 'tree.top', event)) {
       event.preventDefault()
       setCursor(0)
       return
     }
-    if (key === 'G' && !mod) {
+    if (matchesCommand(shortcuts, 'tree.bottom', event)) {
       event.preventDefault()
       setCursor(entries.length - 1)
       return

@@ -2,6 +2,7 @@ mod error;
 mod files;
 mod paths;
 mod search;
+mod settings;
 mod state;
 mod tree;
 mod watch;
@@ -14,6 +15,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::error::{ApiError, ApiResult};
 use crate::files::{FileDoc, SaveResult};
 use crate::search::GrepResponse;
+use crate::settings::AppSettings;
 use crate::state::{AppState, RootEntry};
 use crate::tree::TreeNode;
 
@@ -34,13 +36,20 @@ struct VimrcResponse {
     content: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsResponse {
+    settings: AppSettings,
+    path: String,
+}
+
 fn root_of(state: &State<'_, AppState>) -> PathBuf {
     state.root_path()
 }
 
 #[tauri::command]
 fn info(state: State<'_, AppState>) -> ApiResult<InfoResponse> {
-    let roots = state.roots.lock().map_err(|_| ApiError::new("state", "lock"))?;
+    let roots = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
     let active = roots.active().clone();
     Ok(InfoResponse {
         root: active.path.clone(),
@@ -52,15 +61,15 @@ fn info(state: State<'_, AppState>) -> ApiResult<InfoResponse> {
 
 #[tauri::command]
 fn root_add(state: State<'_, AppState>, path: String, name: Option<String>) -> ApiResult<RootEntry> {
-    let mut roots = state.roots.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    roots.add(&path, name)
+    let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
+    config.add(&path, name)
 }
 
 #[tauri::command]
 fn root_set(app: AppHandle, state: State<'_, AppState>, id: String) -> ApiResult<RootEntry> {
     let (root, root_path) = {
-        let mut roots = state.roots.lock().map_err(|_| ApiError::new("state", "lock"))?;
-        let root = roots.set_active(&id)?;
+        let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
+        let root = config.set_active(&id)?;
         let path = PathBuf::from(&root.path);
         (root, path)
     };
@@ -73,9 +82,9 @@ fn root_set(app: AppHandle, state: State<'_, AppState>, id: String) -> ApiResult
 
 #[tauri::command]
 fn root_remove(state: State<'_, AppState>, id: String) -> ApiResult<Vec<RootEntry>> {
-    let mut roots = state.roots.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    roots.remove(&id)?;
-    Ok(roots.list())
+    let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
+    config.remove(&id)?;
+    Ok(config.list())
 }
 
 #[tauri::command]
@@ -183,20 +192,30 @@ fn restore_entry(state: State<'_, AppState>, from: String, to: String) -> ApiRes
 }
 
 #[tauri::command]
-fn vimrc() -> VimrcResponse {
-    let path = state::home_dir().join(".vimrc");
-    match std::fs::read_to_string(&path) {
-        Ok(content) => VimrcResponse {
-            path: path.to_string_lossy().to_string(),
-            exists: true,
-            content: content.chars().take(200_000).collect(),
-        },
-        Err(_) => VimrcResponse {
-            path: path.to_string_lossy().to_string(),
-            exists: false,
-            content: String::new(),
-        },
-    }
+fn vimrc(state: State<'_, AppState>) -> ApiResult<VimrcResponse> {
+    let source = state.settings()?.load_vimrc();
+    Ok(VimrcResponse {
+        path: source.path,
+        exists: source.exists,
+        content: source.content,
+    })
+}
+
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> ApiResult<SettingsResponse> {
+    Ok(SettingsResponse {
+        settings: state.settings()?,
+        path: state::config_path().to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn settings_set(state: State<'_, AppState>, settings: AppSettings) -> ApiResult<SettingsResponse> {
+    let saved = state.set_settings(settings.sanitize()?)?;
+    Ok(SettingsResponse {
+        settings: saved,
+        path: state::config_path().to_string_lossy().to_string(),
+    })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -223,7 +242,9 @@ pub fn run() {
             transfer_entry,
             trash_entry,
             restore_entry,
-            vimrc
+            vimrc,
+            settings_get,
+            settings_set
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -3,6 +3,7 @@ import type { TreeNode } from '../../shared/types'
 import { api } from '../api'
 import { baseName, dirname, globToRegExp, iconFor, iconTone, joinPath, kindGroup, type KindGroup } from '../lib/paths'
 import { askConfirm, askPrompt } from '../lib/dialogs'
+import { matchesCommand } from '../lib/shortcuts'
 
 const ROW = 26
 
@@ -40,6 +41,7 @@ function inSizeBucket(size: number, bucket: SizeBucket): boolean {
 
 interface Props {
   nodes: TreeNode[]
+  shortcuts: Record<string, string>
   focusRef?: { current: (() => void) | null }
   selected: string | null
   currentDir: string
@@ -82,6 +84,7 @@ interface UndoEntry {
 
 export function FileTree({
   nodes,
+  shortcuts,
   focusRef,
   selected,
   currentDir,
@@ -479,73 +482,83 @@ export function FileTree({
       }
       return
     }
-    if (mod) return
+    const shortcut = (id: string) => matchesCommand(shortcuts, id, event)
 
-    switch (key) {
-      case 'j':
-        event.preventDefault()
-        moveCursor(cursor + 1)
-        return
-      case 'k':
-        event.preventDefault()
-        moveCursor(cursor - 1)
-        return
-      case 'l':
-        event.preventDefault()
-        if (activeRow?.node.type === 'dir') {
-          if (!expanded.has(activeRow.node.path)) onToggle(activeRow.node.path)
-          else onOpenDir(activeRow.node.path)
-        } else if (activeRow) onSelect(activeRow.node.path)
-        return
-      case 'h':
-        event.preventDefault()
-        if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) {
-          onToggle(activeRow.node.path)
-        } else if (activeRow) {
-          const parent = dirname(activeRow.node.path)
-          const index = rows.findIndex((row) => row.node.path === parent)
-          if (index >= 0) setCursorPath(rows[index]?.node.path ?? null)
-          else onOpenDir(parent)
-        }
-        return
-      case 'g':
-        event.preventDefault()
-        moveCursor(0)
-        return
-      case 'G':
-        event.preventDefault()
-        moveCursor(rows.length - 1)
-        return
-      case 'a':
-        event.preventDefault()
-        void newFile()
-        return
-      case 'r':
-        event.preventDefault()
-        void rename()
-        return
-      case 'd':
-        event.preventDefault()
-        void trash()
-        return
-      case 'x':
-        event.preventDefault()
-        cut()
-        return
-      case 'y':
-        event.preventDefault()
-        copy()
-        return
-      case 'p':
-        event.preventDefault()
-        paste()
-        return
-      case 'u':
-        event.preventDefault()
-        undo()
-        return
-      default:
-        return
+    if (shortcut('tree.down')) {
+      event.preventDefault()
+      if (event.shiftKey) extendCursor(cursor + 1)
+      else moveCursor(cursor + 1)
+      return
+    }
+    if (shortcut('tree.up')) {
+      event.preventDefault()
+      if (event.shiftKey) extendCursor(cursor - 1)
+      else moveCursor(cursor - 1)
+      return
+    }
+    if (shortcut('tree.expand')) {
+      event.preventDefault()
+      if (activeRow?.node.type === 'dir') {
+        if (!expanded.has(activeRow.node.path)) onToggle(activeRow.node.path)
+        else onOpenDir(activeRow.node.path)
+      } else if (activeRow) onSelect(activeRow.node.path)
+      return
+    }
+    if (shortcut('tree.collapse')) {
+      event.preventDefault()
+      if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) {
+        onToggle(activeRow.node.path)
+      } else if (activeRow) {
+        const parent = dirname(activeRow.node.path)
+        const index = rows.findIndex((row) => row.node.path === parent)
+        if (index >= 0) setCursorPath(rows[index]?.node.path ?? null)
+        else onOpenDir(parent)
+      }
+      return
+    }
+    if (shortcut('tree.top')) {
+      event.preventDefault()
+      moveCursor(0)
+      return
+    }
+    if (shortcut('tree.bottom')) {
+      event.preventDefault()
+      moveCursor(rows.length - 1)
+      return
+    }
+    if (shortcut('tree.newFile')) {
+      event.preventDefault()
+      void newFile()
+      return
+    }
+    if (shortcut('tree.rename')) {
+      event.preventDefault()
+      void rename()
+      return
+    }
+    if (shortcut('tree.trash')) {
+      event.preventDefault()
+      void trash()
+      return
+    }
+    if (shortcut('tree.cut')) {
+      event.preventDefault()
+      cut()
+      return
+    }
+    if (shortcut('tree.copy')) {
+      event.preventDefault()
+      copy()
+      return
+    }
+    if (shortcut('tree.paste')) {
+      event.preventDefault()
+      paste()
+      return
+    }
+    if (shortcut('tree.undo')) {
+      event.preventDefault()
+      undo()
     }
   }
 

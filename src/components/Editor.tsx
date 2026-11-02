@@ -25,6 +25,7 @@ import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
 import { vim } from '@replit/codemirror-vim'
 import { loadLanguageExtension } from '../lib/languages'
+import { matchesCommand } from '../lib/shortcuts'
 import { setSaveHandler } from '../lib/vim'
 import type { VimSettings } from '../lib/vimrc'
 
@@ -108,6 +109,9 @@ interface Props {
   value: string
   filePath: string
   settings: VimSettings
+  vimEnabled: boolean
+  wordWrap: boolean
+  shortcuts: Record<string, string>
   onChange: (value: string) => void
   onSave: () => void
   onAutoSave?: () => void
@@ -124,6 +128,9 @@ export function Editor({
   value,
   filePath,
   settings,
+  vimEnabled,
+  wordWrap,
+  shortcuts,
   onChange,
   onSave,
   onAutoSave,
@@ -138,6 +145,7 @@ export function Editor({
   const onSaveRef = useRef(onSave)
   const onAutoSaveRef = useRef(onAutoSave)
   const onMediaRef = useRef(onMedia)
+  const shortcutsRef = useRef(shortcuts)
   const language = useRef(new Compartment())
 
   valueRef.current = value
@@ -145,6 +153,7 @@ export function Editor({
   onSaveRef.current = onSave
   onAutoSaveRef.current = onAutoSave
   onMediaRef.current = onMedia
+  shortcutsRef.current = shortcuts
 
   useEffect(() => {
     const handler = () => onSaveRef.current()
@@ -187,17 +196,33 @@ export function Editor({
         ...searchKeymap,
         ...historyKeymap,
       ]),
-      vim(),
+      ...(vimEnabled ? [vim()] : []),
       Prec.highest(
-        keymap.of([
-          { key: 'Ctrl-d', run: (view) => jumpToScreenEdge(view, 'bottom') },
-          { key: 'Ctrl-u', run: (view) => jumpToScreenEdge(view, 'top') },
-          { key: 'Ctrl-f', run: cursorPageDown, preventDefault: true },
-          { key: 'Ctrl-b', run: cursorPageUp, preventDefault: true },
-        ]),
+        EditorView.domEventHandlers({
+          keydown: (event, view) => {
+            const current = shortcutsRef.current
+            if (matchesCommand(current, 'editor.pageDown', event)) {
+              event.preventDefault()
+              return cursorPageDown(view)
+            }
+            if (matchesCommand(current, 'editor.pageUp', event)) {
+              event.preventDefault()
+              return cursorPageUp(view)
+            }
+            if (matchesCommand(current, 'editor.jumpBottom', event)) {
+              event.preventDefault()
+              return jumpToScreenEdge(view, 'bottom')
+            }
+            if (matchesCommand(current, 'editor.jumpTop', event)) {
+              event.preventDefault()
+              return jumpToScreenEdge(view, 'top')
+            }
+            return false
+          },
+        }),
       ),
       lightTheme,
-      EditorView.lineWrapping,
+      ...(wordWrap ? [EditorView.lineWrapping] : []),
       EditorState.tabSize.of(settings.tabstop),
       indentUnit.of(settings.expandtab ? ' '.repeat(Math.max(1, settings.shiftwidth)) : '\t'),
       language.current.of([]),
@@ -285,7 +310,7 @@ export function Editor({
       view.destroy()
       viewRef.current = null
     }
-  }, [settings, filePath, focusRef])
+  }, [settings.sourceKey, filePath, focusRef, vimEnabled, wordWrap])
 
   useEffect(() => {
     const view = viewRef.current

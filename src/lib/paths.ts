@@ -105,7 +105,7 @@ export function fileKind(path: string): FileKind {
   if (ext === 'excalidraw') return 'excalidraw'
   if (ext === 'svg') return 'svg'
   if (IMAGE_EXTENSIONS.has(ext)) return 'image'
-  if (TEXT_EXTENSIONS.has(ext)) return 'text'
+  if (!ext || TEXT_EXTENSIONS.has(ext)) return 'text'
   return 'binary'
 }
 

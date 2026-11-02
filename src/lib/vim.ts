@@ -51,7 +51,11 @@ function applyOption(name: string, value: string | number | boolean) {
   }
 }
 
-export function applyVimSettings(settings: VimSettings): VimSettings {
+export function applyVimSettings(settings: VimSettings, enabled = true): VimSettings {
+  if (!enabled) {
+    appliedSettings = null
+    return settings
+  }
   ensureCommands()
   if (appliedSettings === settings) return settings
   appliedSettings = settings

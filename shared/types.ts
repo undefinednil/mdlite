@@ -50,3 +50,29 @@ export interface InfoResponse {
   id: string
   roots: RootEntry[]
 }
+
+export type VimrcMode = 'auto' | 'path' | 'inline'
+
+export interface VimrcSettings {
+  mode: VimrcMode
+  path: string
+  text: string
+}
+
+export interface AppSettings {
+  vimEnabled: boolean
+  wordWrap: boolean
+  vimrc: VimrcSettings
+  shortcuts: Record<string, string>
+}
+
+export interface SettingsResponse {
+  settings: AppSettings
+  path: string
+}
+
+export interface VimrcResponse {
+  path: string
+  exists: boolean
+  content: string
+}
