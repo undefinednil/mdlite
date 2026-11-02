@@ -25,9 +25,9 @@ export function MediaView({ path, size }: Props) {
         <div className="binary-meta">
           {formatSize(size)} · no preview for this file type
         </div>
-        <a className="btn" href={api.rawUrl(path)} target="_blank" rel="noreferrer">
-          Open raw file
-        </a>
+        <button type="button" className="btn" onClick={() => void api.open(path)}>
+          Open with default app
+        </button>
       </div>
     </div>
   )

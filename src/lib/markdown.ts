@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it'
 import type { Highlighter } from 'shiki'
 import { resolveRelative } from './paths'
+import { api } from '../api'
 
 const md = new MarkdownIt({ html: true, linkify: true, breaks: true, typographer: false })
 
@@ -52,10 +53,9 @@ export function renderMarkdown(source: string): string {
   return md.render(expanded)
 }
 
-export interface EnhanceOptions {
+interface EnhanceOptions {
   source?: string
   query?: string | string[]
-  onNavigate?: (path: string) => void
   isCancelled?: () => boolean
   onSourceChange?: (next: string) => void
 }
@@ -68,14 +68,14 @@ function rewriteResources(root: HTMLElement, filePath: string) {
     if (!src) continue
     img.dataset.rawSrc = src
     const resolved = resolveRelative(filePath, src)
-    if (resolved) img.setAttribute('src', `/api/raw?path=${encodeURIComponent(resolved)}`)
+    if (resolved) img.setAttribute('src', api.rawUrl(resolved))
   }
 
   for (const node of Array.from(root.querySelectorAll<HTMLElement>('video, audio, source'))) {
     const src = node.getAttribute('src')
     if (!src) continue
     const resolved = resolveRelative(filePath, src)
-    if (resolved) node.setAttribute('src', `/api/raw?path=${encodeURIComponent(resolved)}`)
+    if (resolved) node.setAttribute('src', api.rawUrl(resolved))
   }
 
   for (const img of Array.from(root.querySelectorAll('img'))) {

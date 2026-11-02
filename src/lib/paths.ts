@@ -8,20 +8,10 @@ export function baseName(path: string): string {
   return idx === -1 ? path : path.slice(idx + 1)
 }
 
-export function extname(path: string): string {
+function extname(path: string): string {
   const name = baseName(path)
   const idx = name.lastIndexOf('.')
   return idx <= 0 ? '' : name.slice(idx + 1).toLowerCase()
-}
-
-export function isMarkdown(path: string): boolean {
-  const ext = extname(path)
-  return ext === 'md' || ext === 'markdown' || ext === 'mdx'
-}
-
-export function isImage(path: string): boolean {
-  const ext = extname(path)
-  return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp'].includes(ext)
 }
 
 export function joinPath(dir: string, rel: string): string {
@@ -30,7 +20,7 @@ export function joinPath(dir: string, rel: string): string {
   return `${dir}/${rel}`
 }
 
-export function normalizePath(path: string): string {
+function normalizePath(path: string): string {
   const out: string[] = []
   for (const part of path.split('/')) {
     if (!part || part === '.') continue
@@ -97,7 +87,7 @@ export function highlightSegments(text: string, indices: number[]): { text: stri
   return segments
 }
 
-export type FileKind = 'markdown' | 'excalidraw' | 'svg' | 'image' | 'text' | 'binary'
+type FileKind = 'markdown' | 'excalidraw' | 'svg' | 'image' | 'text' | 'binary'
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'env', 'conf', 'cfg',

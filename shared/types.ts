@@ -1,4 +1,4 @@
-export type NodeType = 'dir' | 'file'
+type NodeType = 'dir' | 'file'
 
 export interface TreeNode {
   name: string
@@ -22,7 +22,7 @@ export interface SaveResult {
   size: number
 }
 
-export interface GrepMatch {
+interface GrepMatch {
   line: number
   text: string
 }
@@ -38,18 +38,6 @@ export interface GrepResponse {
   tookMs: number
 }
 
-export interface FuzzyResult {
-  path: string
-  score: number
-  indices: number[]
-}
-
-export interface ApiError extends Error {
-  status?: number
-  mtime?: number
-  content?: string
-}
-
 export interface RootEntry {
   id: string
   name: string
@@ -60,6 +48,5 @@ export interface InfoResponse {
   root: string
   name: string
   id: string
-  dev: boolean
   roots: RootEntry[]
 }

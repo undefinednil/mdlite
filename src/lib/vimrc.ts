@@ -1,4 +1,6 @@
-export interface VimMapping {
+import { api } from '../api'
+
+interface VimMapping {
   lhs: string
   rhs: string
   ctx?: string
@@ -17,12 +19,6 @@ export interface VimSettings {
   shiftwidth: number
   expandtab: boolean
   number: boolean
-  relativenumber: boolean
-  cursorline: boolean
-  scrolloff: number
-  ignorecase: boolean
-  smartcase: boolean
-  wrap: boolean
 }
 
 export const defaultVimSettings: VimSettings = {
@@ -37,12 +33,6 @@ export const defaultVimSettings: VimSettings = {
   shiftwidth: 8,
   expandtab: false,
   number: true,
-  relativenumber: false,
-  cursorline: false,
-  scrolloff: 0,
-  ignorecase: false,
-  smartcase: false,
-  wrap: true,
 }
 
 const BOOLEAN_OPTIONS = new Set([
@@ -102,7 +92,7 @@ const KEY_NAMES: Record<string, string> = {
   localleader: 'LEADER',
 }
 
-export function normalizeKeys(input: string, leader: string): string {
+function normalizeKeys(input: string, leader: string): string {
   return input.replace(/<([^<>]+)>/g, (match, raw: string) => {
     const name = raw.trim()
     const lower = name.toLowerCase()
@@ -157,7 +147,7 @@ function splitArgs(input: string): string[] {
   return out
 }
 
-export function parseVimrc(text: string, source = ''): VimSettings {
+function parseVimrc(text: string, source = ''): VimSettings {
   const settings: VimSettings = {
     ...defaultVimSettings,
     source,
@@ -250,12 +240,7 @@ export function parseVimrc(text: string, source = ''): VimSettings {
   settings.shiftwidth = pickNumber(settings.options, ['shiftwidth', 'sw'], settings.tabstop)
   settings.expandtab = pickBoolean(settings.options, ['expandtab', 'et'], false)
   settings.number = pickBoolean(settings.options, ['number', 'nu'], true)
-  settings.relativenumber = pickBoolean(settings.options, ['relativenumber', 'rnu'], false)
-  settings.cursorline = pickBoolean(settings.options, ['cursorline', 'cul'], false)
-  settings.scrolloff = pickNumber(settings.options, ['scrolloff', 'so'], 0)
-  settings.ignorecase = pickBoolean(settings.options, ['ignorecase', 'ic'], false)
-  settings.smartcase = pickBoolean(settings.options, ['smartcase', 'scs'], false)
-  settings.wrap = pickBoolean(settings.options, ['wrap'], true)
+
 
   return settings
 }
@@ -281,8 +266,7 @@ let cached: VimSettings | null = null
 export async function loadVimSettings(): Promise<VimSettings> {
   if (cached) return cached
   try {
-    const res = await fetch('/api/vimrc')
-    const data = (await res.json()) as { path?: string; exists?: boolean; content?: string }
+    const data = await api.vimrc()
     cached = parseVimrc(data.content ?? '', data.exists ? (data.path ?? '~/.vimrc') : '')
   } catch {
     cached = { ...defaultVimSettings }

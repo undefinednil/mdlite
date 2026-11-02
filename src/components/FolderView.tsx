@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TreeNode } from '../../shared/types'
-import { baseName, fileKind, formatKind, iconFor, iconTone } from '../lib/paths'
+import { formatKind, iconFor, iconTone } from '../lib/paths'
 
 type SortKey = 'name' | 'size' | 'mtime'
 
