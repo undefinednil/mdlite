@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { RootEntry } from '../../shared/types'
+import { askConfirm } from '../lib/dialogs'
 
 interface Props {
   roots: RootEntry[]
@@ -48,7 +49,7 @@ export function SettingsView({ roots, activeId, activePath, onSwitch, onAdd, onR
         <div>
           <h1>Root folders</h1>
           <p className="settings-sub">
-            Pick which folder the app serves. Paths are resolved on the machine running the server.
+            Pick which folder the app reads. Paths are resolved on this machine.
           </p>
         </div>
         <button type="button" className="btn" onClick={onClose}>
@@ -83,8 +84,13 @@ export function SettingsView({ roots, activeId, activePath, onSwitch, onAdd, onR
                     className="btn danger"
                     disabled={busy}
                     onClick={() => {
-                      if (!window.confirm(`Remove "${root.name}" from the list? The folder itself is not deleted.`)) return
-                      void run(() => onRemove(root.id))
+                      void (async () => {
+                        const confirmed = await askConfirm(
+                          `Remove "${root.name}" from the list? The folder itself is not deleted.`,
+                        )
+                        if (!confirmed) return
+                        await run(() => onRemove(root.id))
+                      })()
                     }}
                   >
                     Remove
@@ -119,13 +125,25 @@ export function SettingsView({ roots, activeId, activePath, onSwitch, onAdd, onR
             }}
             spellCheck={false}
           />
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={async () => {
+              const { open } = await import('@tauri-apps/plugin-dialog')
+              const picked = await open({ directory: true, multiple: false, title: 'Choose a folder' })
+              if (typeof picked === 'string') setPath(picked)
+            }}
+          >
+            Browse…
+          </button>
           <button type="button" className="btn primary" disabled={busy || !path.trim()} onClick={() => void add()}>
             Add
           </button>
         </div>
         {error && <div className="settings-error">{error}</div>}
         <p className="settings-note">
-          The list is saved to <code>~/.mdlite.json</code> on the server. Setting <code>MDLITE_CONFIG</code> moves
+          The list is saved to <code>~/.mdlite.json</code> on this machine. Setting <code>MDLITE_CONFIG</code> moves
           that file. <code>MDLITE_ROOT</code> seeds the first entry.
         </p>
       </section>
@@ -135,8 +153,8 @@ export function SettingsView({ roots, activeId, activePath, onSwitch, onAdd, onR
         <dl>
           <dt>Serving</dt>
           <dd>{activePath}</dd>
-          <dt>Install</dt>
-          <dd>Use the browser's install button to add this app to your dock or home screen.</dd>
+          <dt>Runtime</dt>
+          <dd>Desktop app — files are read directly from disk.</dd>
         </dl>
       </section>
     </div>

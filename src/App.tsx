@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { FileDoc, RootEntry, TreeNode } from '../shared/types'
 import { ApiError, api } from './api'
 import { Editor } from './components/Editor'
@@ -8,6 +9,9 @@ import { MarkdownView } from './components/MarkdownView'
 import { MediaView } from './components/MediaView'
 import { Palette, type PaletteMode } from './components/Palette'
 import { SettingsView } from './components/SettingsView'
+import { DialogHost } from './components/DialogHost'
+import { askConfirm } from './lib/dialogs'
+import logoUrl from './assets/logo.png'
 import { ancestors, baseName, canEdit, dirname, fileKind, formatKind } from './lib/paths'
 import { defaultVimSettings, loadVimSettings, type VimSettings } from './lib/vimrc'
 import { applyVimSettings } from './lib/vim'
@@ -19,13 +23,6 @@ type Status = 'idle' | 'loading' | 'ready' | 'error'
 interface JumpTarget {
   text: string
   query: string
-}
-
-function readRoute(): { path: string | null; dir: string } {
-  const params = new URLSearchParams(window.location.search)
-  const path = params.get('path')
-  const dir = params.get('dir') ?? ''
-  return { path: path || null, dir }
 }
 
 function findNode(nodes: TreeNode[], path: string): TreeNode | null {
@@ -58,21 +55,11 @@ function formatTime(ms?: number): string {
 }
 
 export default function App() {
-  const initial = useMemo(readRoute, [])
-
   const [tree, setTree] = useState<TreeNode[]>([])
   const [treeTick, setTreeTick] = useState(0)
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    const initialSet = new Set<string>()
-    const base = initial.path ?? initial.dir
-    if (base) {
-      if (initial.dir && !initial.path) initialSet.add(initial.dir)
-      for (const ancestor of ancestors(base)) initialSet.add(ancestor)
-    }
-    return initialSet
-  })
-  const [selected, setSelected] = useState<string | null>(initial.path)
-  const [currentDir, setCurrentDir] = useState<string>(initial.dir)
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [selected, setSelected] = useState<string | null>(null)
+  const [currentDir, setCurrentDir] = useState('')
   const [doc, setDoc] = useState<FileDoc | null>(null)
   const [draft, setDraft] = useState('')
   const [mode, setMode] = useState<'view' | 'edit'>('view')
@@ -83,13 +70,14 @@ export default function App() {
   const [jump, setJump] = useState<JumpTarget | null>(null)
   const [savedAt, setSavedAt] = useState(0)
   const [copiedAt, setCopiedAt] = useState(0)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [recents, setRecents] = useState<string[]>([])
+  const [cycle, setCycle] = useState<{ items: string[]; index: number } | null>(null)
   const [rootName, setRootName] = useState('notes')
   const [rootPath, setRootPath] = useState('')
   const [roots, setRoots] = useState<RootEntry[]>([])
   const [activeRootId, setActiveRootId] = useState('')
-  const [showSettings, setShowSettings] = useState(
-    () => new URLSearchParams(window.location.search).get('view') === 'settings',
-  )
+  const [showSettings, setShowSettings] = useState(false)
   const [vim, setVim] = useState<VimSettings>(defaultVimSettings)
   const [scratch, setScratch] = useState<{ name: string; content: string } | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -114,6 +102,12 @@ export default function App() {
 
   const scratchRef = useRef(scratch)
   scratchRef.current = scratch
+
+  const recentsRef = useRef(recents)
+  recentsRef.current = recents
+
+  const cycleRef = useRef(cycle)
+  cycleRef.current = cycle
 
   const treeRef = useRef(tree)
   treeRef.current = tree
@@ -188,6 +182,7 @@ export default function App() {
         setDraft(result.content)
         setConflict(null)
         setStatus('ready')
+        setRecents((prev) => [result.path, ...prev.filter((path) => path !== result.path)].slice(0, 5))
       })
       .catch((err: Error) => {
         if (id !== requestRef.current) return
@@ -197,7 +192,7 @@ export default function App() {
   }, [selected, scratch])
 
   useEffect(() => {
-    document.title = activePath ? `${baseName(activePath)} — mdlite` : 'mdlite'
+    void getCurrentWindow().setTitle(activePath ? `${baseName(activePath)} — mdlite` : 'mdlite')
   }, [activePath])
 
   const activeScroller = useCallback((): HTMLElement | null => {
@@ -242,22 +237,9 @@ export default function App() {
     applyScrollRatio(scrollRatios.current.get(doc.path) ?? 0)
   }, [status, doc?.path, applyScrollRatio])
 
-  const pushRoute = useCallback((next: { path?: string | null; dir?: string }) => {
-    const url = new URL(window.location.href)
-    if (next.path !== undefined) {
-      if (next.path) url.searchParams.set('path', next.path)
-      else url.searchParams.delete('path')
-    }
-    if (next.dir !== undefined) {
-      if (next.dir) url.searchParams.set('dir', next.dir)
-      else url.searchParams.delete('dir')
-    }
-    window.history.pushState(null, '', url)
-  }, [])
-
   const selectFile = useCallback(
-    (path: string, target?: JumpTarget) => {
-      if (stateRef.current.dirty && !window.confirm('Discard unsaved changes?')) return
+    async (path: string, target?: JumpTarget) => {
+      if (stateRef.current.dirty && !(await askConfirm('Discard unsaved changes?'))) return
       const dir = dirname(path)
       focusOnReadyRef.current = true
       setScratch(null)
@@ -270,14 +252,13 @@ export default function App() {
         for (const ancestor of ancestors(path)) next.add(ancestor)
         return next
       })
-      pushRoute({ path, dir })
     },
-    [pushRoute],
+    [],
   )
 
   const openDir = useCallback(
-    (dir: string) => {
-      if (stateRef.current.dirty && !window.confirm('Discard unsaved changes?')) return
+    async (dir: string) => {
+      if (stateRef.current.dirty && !(await askConfirm('Discard unsaved changes?'))) return
       setScratch(null)
       setSelected(null)
       setCurrentDir(dir)
@@ -291,20 +272,17 @@ export default function App() {
         }
         return next
       })
-      pushRoute({ path: null, dir })
     },
-    [pushRoute],
+    [],
   )
 
   const save = useCallback(async (force = false, contentOverride?: string) => {
     if (scratchRef.current) {
-      const blob = new Blob([draftRef.current], { type: 'text/plain' })
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = scratchRef.current.name
-      anchor.click()
-      URL.revokeObjectURL(url)
+      const { save } = await import('@tauri-apps/plugin-dialog')
+      const target = await save({ defaultPath: scratchRef.current.name })
+      if (!target) return
+      await api.saveText(target, draftRef.current)
+      setNotice(`saved ${target}`)
       setSavedAt(Date.now())
       return
     }
@@ -323,7 +301,7 @@ export default function App() {
       setTreeTick((value) => value + 1)
     } catch (err) {
       const apiError = err as ApiError
-      if (apiError.status === 409 && typeof apiError.mtime === 'number') {
+      if (apiError.kind === 'conflict' && typeof apiError.mtime === 'number') {
         setConflict({ mtime: apiError.mtime, content: apiError.content ?? '' })
       } else {
         setError(apiError.message)
@@ -365,18 +343,27 @@ export default function App() {
       if (!raw) {
         const element = scrollRef.current?.querySelector<HTMLElement>('.markdown')
         if (element && typeof ClipboardItem !== 'undefined') {
-          await navigator.clipboard.write([
-            new ClipboardItem({
-              'text/html': new Blob([element.innerHTML], { type: 'text/html' }),
-              'text/plain': new Blob([element.innerText], { type: 'text/plain' }),
-            }),
-          ])
-          setCopiedAt(Date.now())
-          return
+          try {
+            await navigator.clipboard.write([
+              new ClipboardItem({
+                'text/html': new Blob([element.innerHTML], { type: 'text/html' }),
+                'text/plain': new Blob([element.innerText], { type: 'text/plain' }),
+              }),
+            ])
+            setCopiedAt(Date.now())
+            setNotice('Copied styled text')
+            return
+          } catch {
+            await navigator.clipboard.writeText(element.innerText)
+            setCopiedAt(Date.now())
+            setNotice('Copied text')
+            return
+          }
         }
       }
       await navigator.clipboard.writeText(draftRef.current)
       setCopiedAt(Date.now())
+      setNotice('Copied raw text')
     } catch {
       setError('Could not copy to the clipboard')
     }
@@ -402,10 +389,6 @@ export default function App() {
     setMode('view')
     setConflict(null)
     setTreeTick((value) => value + 1)
-    const url = new URL(window.location.href)
-    url.searchParams.delete('path')
-    url.searchParams.delete('dir')
-    window.history.replaceState(null, '', url)
   }, [])
 
   const switchRoot = useCallback(
@@ -436,16 +419,10 @@ export default function App() {
 
   const openSettings = useCallback(() => {
     setShowSettings(true)
-    const url = new URL(window.location.href)
-    url.searchParams.set('view', 'settings')
-    window.history.pushState(null, '', url)
   }, [])
 
   const closeSettings = useCallback(() => {
     setShowSettings(false)
-    const url = new URL(window.location.href)
-    url.searchParams.delete('view')
-    window.history.pushState(null, '', url)
   }, [])
 
   const focusMain = useCallback(() => {
@@ -469,7 +446,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
+      const target = event.target instanceof Element ? event.target : null
       const typing = Boolean(target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor'))
       const mod = event.metaKey || event.ctrlKey
       const key = event.key.toLowerCase()
@@ -561,50 +538,69 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!stateRef.current.dirty) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && cycleRef.current) {
+        event.preventDefault()
+        setCycle(null)
+        return
+      }
+      if (!event.ctrlKey || event.key !== 'Tab') return
+
       event.preventDefault()
-      event.returnValue = ''
+      event.stopPropagation()
+
+      const items = cycleRef.current?.items ?? recentsRef.current
+      if (items.length === 0) return
+      const direction = event.shiftKey ? -1 : 1
+
+      setCycle((current) => {
+        if (!current) return { items, index: items.length > 1 ? 1 : 0 }
+        const next = (current.index + direction + items.length) % items.length
+        return { ...current, index: next }
+      })
     }
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== 'Control') return
+      const current = cycleRef.current
+      if (!current) return
+      setCycle(null)
+      const path = current.items[current.index]
+      if (path) void selectFile(path)
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
+  }, [selectFile])
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let closing = false
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        if (closing || !stateRef.current.dirty) return
+        event.preventDefault()
+        if (!(await askConfirm('Discard unsaved changes and close?'))) return
+        closing = true
+        await getCurrentWindow().destroy()
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
+    return () => unlisten?.()
   }, [])
 
   useEffect(() => {
-    const onPopState = () => {
-      const route = readRoute()
-      setShowSettings(new URLSearchParams(window.location.search).get('view') === 'settings')
-      if (stateRef.current.dirty && !window.confirm('Discard unsaved changes?')) return
-      setSelected(route.path)
-      setCurrentDir(route.path ? dirname(route.path) : route.dir)
-      setJump(null)
-      setMode('view')
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [])
-
-  useEffect(() => {
-    const source = new EventSource('/api/events')
-    source.onmessage = async (event) => {
-      let payload: { type?: string; paths?: string[] }
-      try {
-        payload = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      if (payload.type === 'root') {
-        await refreshInfo()
-        resetForRoot()
-        return
-      }
-      if (payload.type !== 'change' || !payload.paths?.length) return
-
+    const unsubscribe = api.subscribeChanges(async (paths) => {
       setTreeTick((value) => value + 1)
 
       const current = stateRef.current
-      if (!current.selected || !payload.paths.includes(current.selected)) return
-      if (!current.doc) return
+      if (!current.selected || !current.doc) return
+      if (!paths.includes(current.selected)) return
 
       const type = fileKind(current.selected)
       if (type === 'image' || type === 'binary') return
@@ -622,10 +618,9 @@ export default function App() {
       } catch {
         return
       }
-    }
-    source.onerror = () => {}
-    return () => source.close()
-  }, [refreshInfo, resetForRoot])
+    })
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
     if (!error) return
@@ -644,6 +639,12 @@ export default function App() {
     const timer = setTimeout(() => setCopiedAt(0), 1600)
     return () => clearTimeout(timer)
   }, [copiedAt])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 1600)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   const onToggle = useCallback((path: string) => {
     setExpanded((prev) => {
@@ -787,7 +788,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-head">
           <span className="brand">
-            <span className="material-symbols-rounded brand-icon">menu_book</span>
+            <img className="brand-icon" src={logoUrl} alt="" />
             mdlite
           </span>
           <div className="sidebar-actions">
@@ -865,17 +866,6 @@ export default function App() {
                   vim
                 </span>
               )}
-              {doc && (kind === 'markdown' || kind === 'text') && (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title={showEditor ? 'Copy raw text' : 'Copy styled text'}
-                  onClick={() => void copyContent()}
-                >
-                  <span className="material-symbols-rounded">content_copy</span>
-                </button>
-              )}
-              {copiedAt > 0 && <span className="saved-flash">Copied</span>}
               {showEditor && kind === 'markdown' && (
                 <>
                   <button
@@ -907,6 +897,18 @@ export default function App() {
               )}
               {savedAt > 0 && <span className="saved-flash">Saved</span>}
               {doc && doc.mtime > 0 && <span className="meta">{formatTime(doc.mtime)}</span>}
+              {doc && (kind === 'markdown' || kind === 'text') && (
+                <button
+                  type="button"
+                  className={`icon-btn copy-btn ${copiedAt > 0 ? 'copied' : ''}`}
+                  title={showEditor ? 'Copy raw text' : 'Copy styled text'}
+                  onClick={() => void copyContent()}
+                >
+                  <span className="material-symbols-rounded">
+                    {copiedAt > 0 ? 'check' : 'content_copy'}
+                  </span>
+                </button>
+              )}
             </>
           ) : (
             <span className="crumb muted">mdlite</span>
@@ -957,6 +959,26 @@ export default function App() {
         </div>
       )}
 
+      <DialogHost />
+
+      {cycle && (
+        <div className="cycle">
+          <div className="cycle-card">
+            <div className="cycle-hint">Recent files — release Ctrl to open</div>
+            {cycle.items.map((path, index) => (
+              <div key={path} className={`cycle-item ${index === cycle.index ? 'active' : ''}`}>
+                <span className="material-symbols-rounded cycle-icon">
+                  {fileKind(path) === 'markdown' ? 'description' : 'code'}
+                </span>
+                <span className="cycle-name">{baseName(path)}</span>
+                <span className="cycle-dir">{dirname(path) || '/'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {notice && <div className="toast info">{notice}</div>}
       {error && <div className="toast">{error}</div>}
 
       {palette && (

@@ -14,5 +14,5 @@
     "esModuleInterop": true,
     "noUncheckedIndexedAccess": false
   },
-  "include": ["src", "server", "shared", "scripts", "vite.config.ts"]
+  "include": ["src", "shared", "scripts", "vite.config.ts"]
 }

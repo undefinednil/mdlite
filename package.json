@@ -3,12 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx scripts/dev.ts",
+    "dev": "tauri dev",
     "build": "vite build",
-    "start": "tsx server/index.ts",
     "typecheck": "tsc --noEmit",
-    "icons": "tsx scripts/make-icons.ts",
-    "make-icons": "tsx scripts/make-icons.ts"
+    "icons": "tsx scripts/make-app-icon.ts",
+    "bundle": "node scripts/bundle.mjs",
+    "bundle:mac": "node scripts/bundle.mjs app",
+    "bundle:win": "node scripts/bundle.mjs nsis",
+    "bundle:win:msi": "node scripts/bundle.mjs msi",
+    "bundle:dmg": "node scripts/bundle.mjs dmg"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",
@@ -31,21 +34,23 @@
     "@excalidraw/excalidraw": "^0.18.1",
     "@lezer/highlight": "^1.2.5",
     "@replit/codemirror-vim": "^6.4.0",
-    "codemirror": "^6.0.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "markdown-it": "^15.0.3",
     "material-symbols": "^0.48.2",
     "mermaid": "^12.2.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "shiki": "^4.5.0",
-    "tsx": "^4.20.6"
+    "shiki": "^4.5.0"
   },
   "devDependencies": {
-    "@types/markdown-it": "^14.2.0",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^24.10.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "sharp": "^0.35.5",
+    "tsx": "^4.20.6",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
   }

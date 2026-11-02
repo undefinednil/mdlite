@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TreeNode } from '../../shared/types'
 import { api } from '../api'
 import { baseName, dirname, globToRegExp, iconFor, iconTone, joinPath, kindGroup, type KindGroup } from '../lib/paths'
+import { askConfirm, askPrompt } from '../lib/dialogs'
 
 const ROW = 26
 
@@ -105,10 +106,12 @@ export function FileTree({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
   const [clipboard, setClipboard] = useState<{ path: string; mode: 'cut' | 'copy' } | null>(null)
+  const [marked, setMarked] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState('')
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const undoStack = useRef<UndoEntry[]>([])
+  const anchorRef = useRef<string | null>(null)
 
   const rows = useMemo(() => {
     const needle = filter.trim()
@@ -234,12 +237,56 @@ export function FileTree({
     if (!rows.length) return
     const clamped = Math.max(0, Math.min(rows.length - 1, next))
     setCursorPath(rows[clamped]?.node.path ?? null)
+    anchorRef.current = rows[clamped]?.node.path ?? null
     const el = scrollRef.current
     if (el) {
       const top = clamped * ROW
       if (top < el.scrollTop) el.scrollTop = top
       else if (top + ROW > el.scrollTop + el.clientHeight) el.scrollTop = top - el.clientHeight + ROW
     }
+  }
+
+  const extendCursor = (next: number) => {
+    if (!rows.length) return
+    const clamped = Math.max(0, Math.min(rows.length - 1, next))
+    const anchor = anchorRef.current ?? cursorPath ?? rows[clamped]?.node.path ?? null
+    const from = rows.findIndex((row) => row.node.path === anchor)
+    moveCursor(clamped)
+    anchorRef.current = anchor
+    if (from < 0) return
+    const [lo, hi] = from < clamped ? [from, clamped] : [clamped, from]
+    setMarked(new Set(rows.slice(lo, hi + 1).map((row) => row.node.path)))
+  }
+
+  const handleRowClick = (row: Row, event: React.MouseEvent) => {
+    scrollRef.current?.focus()
+    setCursorPath(row.node.path)
+    if (event.shiftKey) {
+      const anchor = anchorRef.current ?? row.node.path
+      const from = rows.findIndex((item) => item.node.path === anchor)
+      const to = rows.findIndex((item) => item.node.path === row.node.path)
+      if (from >= 0 && to >= 0) {
+        const [lo, hi] = from < to ? [from, to] : [to, from]
+        setMarked(new Set(rows.slice(lo, hi + 1).map((item) => item.node.path)))
+      } else {
+        setMarked(new Set([row.node.path]))
+      }
+      return
+    }
+    if (event.metaKey || event.ctrlKey) {
+      setMarked((prev) => {
+        const next = new Set(prev)
+        if (next.has(row.node.path)) next.delete(row.node.path)
+        else next.add(row.node.path)
+        return next
+      })
+      anchorRef.current = row.node.path
+      return
+    }
+    if (marked.size) setMarked(new Set())
+    anchorRef.current = row.node.path
+    if (row.node.type === 'dir') onOpenDir(row.node.path)
+    else onSelect(row.node.path)
   }
 
   const targetDir = () => {
@@ -258,9 +305,9 @@ export function FileTree({
     }
   }
 
-  const newFile = () => {
+  const newFile = async () => {
     const dir = targetDir()
-    const name = window.prompt('New file name (end with / for a folder)')
+    const name = await askPrompt('New file name (end with / for a folder)')
     if (!name) return
     const isDir = name.endsWith('/')
     const clean = name.replace(/\/+$/, '')
@@ -280,12 +327,11 @@ export function FileTree({
     }, `created ${path}`)
   }
 
-  const rename = () => {
+  const rename = async () => {
     if (!activeRow) return
     const from = activeRow.node.path
-    const next = window.prompt('Rename to', baseName(from))
+    const next = await askPrompt('Rename to', baseName(from))
     if (!next || next === baseName(from)) return
-    const to = joinPath(dirname(from), next)
     void run(async () => {
       const result = await api.rename(from, next)
       undoStack.current.push({
@@ -299,22 +345,36 @@ export function FileTree({
     }, `renamed ${from}`)
   }
 
-  const trash = () => {
-    if (!activeRow) return
-    const path = activeRow.node.path
-    if (!window.confirm(`Move "${path}" to trash?`)) return
+  const collapseTargets = (paths: string[]) =>
+    paths.filter((path) => !paths.some((other) => other !== path && path.startsWith(`${other}/`)))
+
+  const trash = async () => {
+    const targets = marked.size
+      ? collapseTargets([...marked])
+      : activeRow
+        ? [activeRow.node.path]
+        : []
+    if (!targets.length) return
+    const label = targets.length === 1 ? `"${targets[0]}"` : `${targets.length} items`
+    if (!(await askConfirm(`Move ${label} to trash?`))) return
     void run(async () => {
-      const result = await api.trash(path)
+      const results: { trashed: string; original: string }[] = []
+      for (const path of targets) {
+        const result = await api.trash(path)
+        results.push({ trashed: result.path, original: path })
+      }
       undoStack.current.push({
-        label: `trash ${path}`,
+        label: `trash ${label}`,
         run: async () => {
-          await api.restore(result.path, path)
-          setCursorPath(path)
+          for (const entry of [...results].reverse()) await api.restore(entry.trashed, entry.original)
+          setCursorPath(dirname(results[0].original) || null)
         },
       })
-      setCursorPath(dirname(path) || null)
-      if (selected === path || (selected ?? '').startsWith(`${path}/`)) onOpenDir(dirname(path))
-    }, `trashed ${path}`)
+      setMarked(new Set())
+      setCursorPath(dirname(targets[0]) || null)
+      const hit = targets.find((path) => path === selected || (selected ?? '').startsWith(`${path}/`))
+      if (hit) onOpenDir(dirname(hit))
+    }, `trashed ${label}`)
   }
 
   const cut = () => {
@@ -370,12 +430,24 @@ export function FileTree({
 
     if (key === 'ArrowDown' || (mod && key.toLowerCase() === 'n')) {
       event.preventDefault()
-      moveCursor(cursor + 1)
+      if (event.shiftKey) extendCursor(cursor + 1)
+      else moveCursor(cursor + 1)
       return
     }
     if (key === 'ArrowUp' || (mod && key.toLowerCase() === 'p')) {
       event.preventDefault()
-      moveCursor(cursor - 1)
+      if (event.shiftKey) extendCursor(cursor - 1)
+      else moveCursor(cursor - 1)
+      return
+    }
+    if (key === 'Escape' && marked.size) {
+      event.preventDefault()
+      setMarked(new Set())
+      return
+    }
+    if (mod && key.toLowerCase() === 'a') {
+      event.preventDefault()
+      setMarked(new Set(rows.map((row) => row.node.path)))
       return
     }
     if (key === 'Enter') {
@@ -446,15 +518,15 @@ export function FileTree({
         return
       case 'a':
         event.preventDefault()
-        newFile()
+        void newFile()
         return
       case 'r':
         event.preventDefault()
-        rename()
+        void rename()
         return
       case 'd':
         event.preventDefault()
-        trash()
+        void trash()
         return
       case 'x':
         event.preventDefault()
@@ -622,6 +694,7 @@ export function FileTree({
                   sizeBucket !== 'any')
               const isActive = cursorPath === row.node.path
               const isSelected = selected === row.node.path
+              const isMarked = marked.has(row.node.path)
               const isCurrentDir = isDir && currentDir === row.node.path
               const isCut = clipboard?.mode === 'cut' && clipboard.path === row.node.path
 
@@ -629,8 +702,8 @@ export function FileTree({
                 <div
                   key={row.node.path}
                   className={`tree-row ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''} ${
-                    isCurrentDir ? 'current-dir' : ''
-                  } ${isCut ? 'cut' : ''}`}
+                    isMarked ? 'marked' : ''
+                  } ${isCurrentDir ? 'current-dir' : ''} ${isCut ? 'cut' : ''}`}
                   style={{
                     position: 'absolute',
                     top: index * ROW,
@@ -639,12 +712,7 @@ export function FileTree({
                     right: 0,
                     paddingLeft: 8 + row.depth * 13,
                   }}
-                  onClick={() => {
-                    scrollRef.current?.focus()
-                    setCursorPath(row.node.path)
-                    if (isDir) onOpenDir(row.node.path)
-                    else onSelect(row.node.path)
-                  }}
+                  onClick={(event) => handleRowClick(row, event)}
                   title={row.node.path}
                 >
                   {isDir ? (
@@ -674,6 +742,7 @@ export function FileTree({
       </div>
 
       <div className="tree-footer">
+        {marked.size > 0 && <span className="tree-sel">{marked.size} selected · d to delete</span>}
         {clipboard && (
           <span className={`tree-clip ${clipboard.mode}`}>
             {clipboard.mode}: {baseName(clipboard.path)}

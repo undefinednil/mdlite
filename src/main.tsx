@@ -6,8 +6,6 @@ import './styles.css'
 const host = document.getElementById('root')
 if (host) createRoot(host).render(<App />)
 
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => undefined)
-  })
+if (import.meta.env.VITE_MDLITE_SELFTEST === '1') {
+  void import('./lib/selftest').then((module) => module.runSelfTest())
 }

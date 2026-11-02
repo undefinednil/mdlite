@@ -12,7 +12,6 @@
   --accent-strong: #1d4ed8;
   --danger: #dc2626;
   --mark: #f59e0b;
-  --radius: 8px;
   --sidebar-width: 296px;
   --mono: 'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
@@ -86,8 +85,10 @@ button {
 }
 
 .brand-icon {
-  font-size: 19px;
-  color: var(--accent);
+  width: 20px;
+  height: 20px;
+  display: block;
+  object-fit: contain;
 }
 
 .sidebar-actions {
@@ -320,6 +321,11 @@ button {
   white-space: nowrap;
 }
 
+.tree-sel {
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
 .tree-row {
   display: flex;
   align-items: center;
@@ -344,6 +350,15 @@ button {
 .tree-row.selected {
   background: var(--accent-soft);
   color: var(--accent-strong);
+}
+
+.tree-row.marked {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.tree-row.marked .tree-icon {
+  color: #ffffff;
 }
 
 .tree-row.current-dir .tree-name {
@@ -611,6 +626,16 @@ button {
 .floating-toggle:hover {
   background: var(--accent-strong);
   transform: translateY(-1px);
+}
+
+.toast.info {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #166534;
+}
+
+.copy-btn.copied {
+  color: #15803d;
 }
 
 .toast {
@@ -986,32 +1011,6 @@ button {
   font-size: 12.5px;
   color: var(--fg-muted);
   margin-bottom: 8px;
-}
-
-.code-view,
-.code-plain {
-  max-width: 940px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 38px 48px 120px;
-  font-family: var(--mono);
-  font-size: 12.9px;
-  line-height: 1.7;
-  overflow-x: auto;
-}
-
-.code-plain {
-  white-space: pre;
-  color: var(--fg-dim);
-}
-
-.code-view pre {
-  margin: 0;
-  background: transparent !important;
-}
-
-.code-view code {
-  font-family: var(--mono);
 }
 
 .excalidraw-host {
@@ -1554,4 +1553,100 @@ button {
   font-family: var(--mono);
   font-size: 11.5px;
   word-break: break-all;
+}
+
+.dialog-overlay {
+  z-index: 80;
+  align-items: center;
+  padding-top: 0;
+}
+
+.dialog {
+  width: min(440px, 90vw);
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px #1f232840;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.dialog-message {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.cycle {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  pointer-events: none;
+  z-index: 75;
+}
+
+.cycle-card {
+  min-width: 380px;
+  max-width: 560px;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px #1f232833;
+  padding: 8px;
+}
+
+.cycle-hint {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--fg-muted);
+  padding: 4px 8px 8px;
+}
+
+.cycle-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.cycle-item.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.cycle-icon {
+  font-size: 17px;
+  color: var(--fg-muted);
+}
+
+.cycle-name {
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.cycle-dir {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
 }
