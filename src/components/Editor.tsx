@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { Compartment, EditorSelection, EditorState, Prec } from '@codemirror/state'
+import { Compartment, EditorSelection, EditorState, type Range } from '@codemirror/state'
 import {
+  Decoration,
+  type DecorationSet,
   EditorView,
+  type ViewUpdate,
+  ViewPlugin,
   crosshairCursor,
   drawSelection,
   dropCursor,
@@ -12,20 +16,20 @@ import {
   lineNumbers,
   rectangularSelection,
 } from '@codemirror/view'
-import { cursorPageDown, cursorPageUp, defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import {
   HighlightStyle,
   bracketMatching,
   indentOnInput,
   indentUnit,
   syntaxHighlighting,
+  syntaxTree,
 } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
-import { vim } from '@replit/codemirror-vim'
 import { loadLanguageExtension } from '../lib/languages'
-import { matchesCommand } from '../lib/shortcuts'
+import { editorKeyExtensions } from '../lib/editorKeys'
 import { setSaveHandler } from '../lib/vim'
 import type { VimSettings } from '../lib/vimrc'
 
@@ -53,6 +57,7 @@ const lightTheme = EditorView.theme(
     },
     '.cm-activeLine': { backgroundColor: '#2563eb0a' },
     '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#2563eb' },
+    '.cm-code-block-line': { backgroundColor: '#f6f8fa' },
     '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
       backgroundColor: '#bfdbfe88',
     },
@@ -74,7 +79,7 @@ const highlightStyle = HighlightStyle.define([
   { tag: tags.strong, fontWeight: '700', color: '#b45309' },
   { tag: tags.emphasis, fontStyle: 'italic', color: '#7c3aed' },
   { tag: tags.strikethrough, color: '#94a3b8', textDecoration: 'line-through' },
-  { tag: tags.monospace, color: '#0f766e', backgroundColor: '#ecfdf5' },
+  { tag: tags.monospace, color: '#0f766e' },
   { tag: tags.quote, color: '#0f766e', fontStyle: 'italic' },
   { tag: tags.list, color: '#d97706' },
   { tag: tags.contentSeparator, color: '#d97706' },
@@ -92,18 +97,58 @@ const highlightStyle = HighlightStyle.define([
   { tag: [tags.invalid], color: '#cf222e' },
 ])
 
-function jumpToScreenEdge(view: EditorView, edge: 'top' | 'bottom'): boolean {
-  const scroller = view.scrollDOM
-  const offset = edge === 'top' ? scroller.scrollTop + 2 : scroller.scrollTop + scroller.clientHeight - 4
-  const block = view.lineBlockAtHeight(offset)
-  const position = edge === 'top' ? block.from : block.to
-  view.dispatch({
-    selection: EditorSelection.cursor(position),
-    effects: EditorView.scrollIntoView(position, { y: 'center' }),
+const appSearchKeymap = searchKeymap.filter((binding) => binding.key !== 'Mod-g')
+
+function codeBlockDecorations(view: EditorView): DecorationSet {
+  const decorations: Range<Decoration>[] = []
+  const seen = new Set<number>()
+  syntaxTree(view.state).iterate({
+    from: view.viewport.from,
+    to: view.viewport.to,
+    enter: (node) => {
+      if (node.name !== 'FencedCode' && node.name !== 'CodeBlock') return true
+      const first = Math.max(
+        view.state.doc.lineAt(node.from).number,
+        view.state.doc.lineAt(view.viewport.from).number,
+      )
+      const last = Math.min(
+        view.state.doc.lineAt(node.to).number,
+        view.state.doc.lineAt(view.viewport.to).number,
+      )
+      for (let number = first; number <= last; number++) {
+        const line = view.state.doc.line(number)
+        if (seen.has(line.from)) continue
+        seen.add(line.from)
+        decorations.push(Decoration.line({ class: 'cm-code-block-line' }).range(line.from))
+      }
+      return false
+    },
   })
-  view.focus()
-  return true
+  return Decoration.set(decorations, true)
 }
+
+const codeBlockBackground = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet
+
+    constructor(view: EditorView) {
+      this.decorations = codeBlockDecorations(view)
+    }
+
+    update(update: ViewUpdate) {
+      if (
+        update.docChanged ||
+        update.viewportChanged ||
+        update.transactions.some((transaction) => transaction.reconfigured)
+      ) {
+        this.decorations = codeBlockDecorations(update.view)
+      }
+    }
+  },
+  {
+    decorations: (value) => value.decorations,
+  },
+)
 
 interface Props {
   value: string
@@ -114,7 +159,6 @@ interface Props {
   shortcuts: Record<string, string>
   onChange: (value: string) => void
   onSave: () => void
-  onAutoSave?: () => void
   focusRef?: { current: (() => void) | null }
   insertRef?: { current: ((text: string) => void) | null }
   onMedia?: (file: File) => Promise<string | null>
@@ -133,7 +177,6 @@ export function Editor({
   shortcuts,
   onChange,
   onSave,
-  onAutoSave,
   focusRef,
   insertRef,
   onMedia,
@@ -143,15 +186,14 @@ export function Editor({
   const valueRef = useRef(value)
   const onChangeRef = useRef(onChange)
   const onSaveRef = useRef(onSave)
-  const onAutoSaveRef = useRef(onAutoSave)
   const onMediaRef = useRef(onMedia)
   const shortcutsRef = useRef(shortcuts)
   const language = useRef(new Compartment())
+  const languageKey = filePath.match(/\.[^./\\]+$/)?.[0] ?? ''
 
   valueRef.current = value
   onChangeRef.current = onChange
   onSaveRef.current = onSave
-  onAutoSaveRef.current = onAutoSave
   onMediaRef.current = onMedia
   shortcutsRef.current = shortcuts
 
@@ -166,14 +208,8 @@ export function Editor({
     if (!host) return
     let destroyed = false
 
-    let blurTimer: ReturnType<typeof setTimeout> | null = null
-    const onFocusOut = (event: FocusEvent) => {
-      const next = event.relatedTarget as Node | null
-      if (next && host.contains(next)) return
-      if (blurTimer) clearTimeout(blurTimer)
-      blurTimer = setTimeout(() => onAutoSaveRef.current?.(), 250)
-    }
-    host.addEventListener('focusout', onFocusOut)
+    const indentWidth = settings.shiftwidth > 0 ? settings.shiftwidth : settings.tabstop
+    const indent = settings.expandtab ? ' '.repeat(Math.max(1, indentWidth)) : '\t'
 
     const extensions = [
       ...(settings.number ? [lineNumbers(), highlightActiveLineGutter()] : []),
@@ -184,6 +220,7 @@ export function Editor({
       EditorState.allowMultipleSelections.of(true),
       indentOnInput(),
       syntaxHighlighting(highlightStyle),
+      codeBlockBackground,
       bracketMatching(),
       closeBrackets(),
       rectangularSelection(),
@@ -193,38 +230,18 @@ export function Editor({
       keymap.of([
         ...closeBracketsKeymap,
         ...defaultKeymap,
-        ...searchKeymap,
+        ...appSearchKeymap,
         ...historyKeymap,
       ]),
-      ...(vimEnabled ? [vim()] : []),
-      Prec.highest(
-        EditorView.domEventHandlers({
-          keydown: (event, view) => {
-            const current = shortcutsRef.current
-            if (matchesCommand(current, 'editor.pageDown', event)) {
-              event.preventDefault()
-              return cursorPageDown(view)
-            }
-            if (matchesCommand(current, 'editor.pageUp', event)) {
-              event.preventDefault()
-              return cursorPageUp(view)
-            }
-            if (matchesCommand(current, 'editor.jumpBottom', event)) {
-              event.preventDefault()
-              return jumpToScreenEdge(view, 'bottom')
-            }
-            if (matchesCommand(current, 'editor.jumpTop', event)) {
-              event.preventDefault()
-              return jumpToScreenEdge(view, 'top')
-            }
-            return false
-          },
-        }),
-      ),
+      ...editorKeyExtensions({
+        indent,
+        vimEnabled,
+        getShortcuts: () => shortcutsRef.current,
+      }),
       lightTheme,
       ...(wordWrap ? [EditorView.lineWrapping] : []),
       EditorState.tabSize.of(settings.tabstop),
-      indentUnit.of(settings.expandtab ? ' '.repeat(Math.max(1, settings.shiftwidth)) : '\t'),
+      indentUnit.of(indent),
       language.current.of([]),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) onChangeRef.current(update.state.doc.toString())
@@ -260,14 +277,6 @@ export function Editor({
           })
           return true
         },
-        keydown: (event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
-            event.preventDefault()
-            onSaveRef.current()
-            return true
-          }
-          return false
-        },
       }),
     ]
 
@@ -292,7 +301,6 @@ export function Editor({
         view.focus()
       }
     }
-    view.focus()
 
     loadLanguageExtension(filePath)
       .then((extension) => {
@@ -303,14 +311,12 @@ export function Editor({
 
     return () => {
       destroyed = true
-      if (blurTimer) clearTimeout(blurTimer)
-      host.removeEventListener('focusout', onFocusOut)
       if (focusRef) focusRef.current = null
       if (insertRef) insertRef.current = null
       view.destroy()
       viewRef.current = null
     }
-  }, [settings.sourceKey, filePath, focusRef, vimEnabled, wordWrap])
+  }, [settings.sourceKey, languageKey, focusRef, vimEnabled, wordWrap])
 
   useEffect(() => {
     const view = viewRef.current

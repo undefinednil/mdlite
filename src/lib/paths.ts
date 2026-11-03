@@ -14,10 +14,30 @@ function extname(path: string): string {
   return idx <= 0 ? '' : name.slice(idx + 1).toLowerCase()
 }
 
+export function isSameOrInside(path: string, parent: string): boolean {
+  if (!parent) return true
+  return path === parent || path.startsWith(`${parent}/`)
+}
+
+export function remapPath(path: string, from: string, to: string): string {
+  if (path === from) return to
+  if (from && path.startsWith(`${from}/`)) return `${to}${path.slice(from.length)}`
+  return path
+}
+
 export function joinPath(dir: string, rel: string): string {
   if (!dir) return rel
   if (!rel) return dir
   return `${dir}/${rel}`
+}
+
+export function pasteDirectory(
+  path: string | null,
+  type: 'dir' | 'file' | null,
+  fallback: string,
+): string {
+  if (!path) return fallback
+  return type === 'dir' ? path : dirname(path)
 }
 
 function normalizePath(path: string): string {
@@ -204,4 +224,14 @@ export function globToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
   const body = escaped.replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\?/g, '.').replace(/\u0000/g, '.*')
   return new RegExp(`^${body}$`, 'i')
+}
+
+export function contentHash(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let hash = 0x811c9dc5
+  for (const byte of bytes) {
+    hash = (hash ^ byte) >>> 0
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
 }

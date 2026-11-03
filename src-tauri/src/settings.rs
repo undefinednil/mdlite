@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
-use crate::state::home_dir;
+use crate::state::{expand_home, home_dir};
 
 pub const VIMRC_LIMIT: usize = 200_000;
+const VIMRC_BYTE_CAP: u64 = 1_000_000;
 const MAX_BINDING_CHARS: usize = 120;
 const MAX_COMMANDS: usize = 200;
 
@@ -34,6 +36,7 @@ impl Default for VimrcConfig {
 pub struct AppSettings {
     pub vim_enabled: bool,
     pub word_wrap: bool,
+    pub main_width: u32,
     pub vimrc: VimrcConfig,
     pub shortcuts: BTreeMap<String, String>,
 }
@@ -43,6 +46,7 @@ impl Default for AppSettings {
         Self {
             vim_enabled: true,
             word_wrap: true,
+            main_width: 100,
             vimrc: VimrcConfig::default(),
             shortcuts: BTreeMap::new(),
         }
@@ -55,24 +59,43 @@ pub struct VimrcSource {
     pub content: String,
 }
 
-fn expand_home(input: &str) -> PathBuf {
-    let trimmed = input.trim();
-    if trimmed == "~" {
-        return home_dir();
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-        return home_dir().join(rest);
-    }
-    PathBuf::from(trimmed)
-}
-
-fn read_capped(path: &PathBuf) -> Option<String> {
-    let content = fs::read_to_string(path).ok()?;
-    Some(content.chars().take(VIMRC_LIMIT).collect())
+fn read_capped(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(VIMRC_BYTE_CAP).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    Some(text.chars().take(VIMRC_LIMIT).collect())
 }
 
 impl AppSettings {
+    pub fn repair(mut self) -> Self {
+        self.main_width = self.main_width.clamp(50, 100);
+        if !matches!(self.vimrc.mode.as_str(), "auto" | "path" | "inline") {
+            self.vimrc.mode = "auto".to_string();
+        }
+        self.vimrc.text = self.vimrc.text.chars().take(VIMRC_LIMIT).collect();
+        if self.vimrc.path.len() > 4096 {
+            self.vimrc.path.clear();
+            self.vimrc.mode = "auto".to_string();
+        }
+        let mut kept = BTreeMap::new();
+        for (id, binding) in self.shortcuts {
+            if kept.len() >= MAX_COMMANDS {
+                break;
+            }
+            if id.is_empty() || id.len() > 80 || binding.len() > MAX_BINDING_CHARS {
+                continue;
+            }
+            kept.insert(id, binding.trim().to_string());
+        }
+        self.shortcuts = kept;
+        self
+    }
+
     pub fn sanitize(mut self) -> ApiResult<Self> {
+        if !(50..=100).contains(&self.main_width) {
+            return Err(ApiError::bad_request("main width must be between 50 and 100"));
+        }
         if !matches!(self.vimrc.mode.as_str(), "auto" | "path" | "inline") {
             return Err(ApiError::bad_request("unknown vimrc mode"));
         }
@@ -148,8 +171,20 @@ mod tests {
         let settings = AppSettings::default();
         assert!(settings.vim_enabled);
         assert!(settings.word_wrap);
+        assert_eq!(settings.main_width, 100);
         assert_eq!(settings.vimrc.mode, "auto");
         assert!(settings.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn clamps_and_rejects_out_of_range_main_width() {
+        let mut settings = AppSettings::default();
+        settings.main_width = 200;
+        assert_eq!(settings.repair().main_width, 100);
+
+        let mut settings = AppSettings::default();
+        settings.main_width = 10;
+        assert!(settings.sanitize().is_err());
     }
 
     #[test]

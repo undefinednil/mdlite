@@ -1,13 +1,19 @@
 # mdlite docs
 
-Use the page that matches what you need.
+Start with the root [README](../README.md) for the overview, quick start and keyboard reference. Then follow the reading order that matches your task:
 
-| Document | What it covers |
+- **Using the app:** [Features](features.md), then [Troubleshooting](troubleshooting.md).
+- **Changing the app:** the repo [AGENTS.md](../AGENTS.md), then [Architecture](architecture.md), [Tech stack](tech-stack.md), [Development](development.md) and the [frontend styling skill](mdlite-frontend-styling/SKILL.md).
+
+Each fact has one owner:
+
+| Document | Owns |
 |---|---|
-| [Features](features.md) | What the app does, area by area, and the limits you will hit |
+| [Features](features.md) | The complete user guide: browsing, viewing and editing, files and folders, search, settings, temporary files, live updates, recent files, limits and known limitations |
+| [Architecture](architecture.md) | Process split, command list, error model, security model and storage |
 | [Tech stack](tech-stack.md) | Languages, libraries and tools, with the reason each one is here |
-| [Architecture](architecture.md) | How the React UI and the Rust core fit together |
-| [Development](development.md) | Setup, checks, release builds, icons and the self-test |
-| [Troubleshooting](troubleshooting.md) | Common failures, known limitations and how to reset |
+| [Development](development.md) | Setup, scripts, checks, self-test, icons and release |
+| [Troubleshooting](troubleshooting.md) | Common failures and how to reset |
+| [Frontend styling skill](mdlite-frontend-styling/SKILL.md) | Visual rules, tokens, layout and component conventions |
 
-The root [README](../README.md) holds the short project overview and the full keyboard reference.
+Other pages link to the owner instead of repeating the fact.

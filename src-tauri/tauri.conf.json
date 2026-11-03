@@ -45,6 +45,9 @@
     ],
     "category": "Productivity",
     "shortDescription": "Local markdown workspace",
-    "longDescription": "Browse, search and edit a folder of Markdown notes with Vim keybindings, Mermaid diagrams and Excalidraw drawings."
+    "longDescription": "Browse, search and edit a folder of Markdown notes with Vim keybindings, Mermaid diagrams and Excalidraw drawings.",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

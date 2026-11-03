@@ -3,6 +3,7 @@ import { rankFuzzy } from '../../shared/fuzzy'
 import type { GrepFile } from '../../shared/types'
 import { api } from '../api'
 import { highlightSegments, iconFor, iconTone } from '../lib/paths'
+import { matchesBinding } from '../lib/shortcuts'
 
 export type PaletteMode = 'files' | 'content'
 
@@ -27,10 +28,56 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   const [truncated, setTruncated] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const paletteRef = useRef<HTMLDivElement>(null)
+  const restoreFocusRef = useRef<HTMLElement | null>(null)
+  const skipRestoreRef = useRef(false)
 
   useEffect(() => {
+    const previous = document.activeElement
+    restoreFocusRef.current = previous instanceof HTMLElement ? previous : null
     inputRef.current?.focus()
+    return () => {
+      if (skipRestoreRef.current) return
+      const target = restoreFocusRef.current
+      requestAnimationFrame(() => target?.focus())
+    }
   }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const root = paletteRef.current
+      if (!root) return
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'input, button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0)
+      if (!focusables.length) return
+      const first = focusables[0]!
+      const last = focusables[focusables.length - 1]!
+      const active = document.activeElement
+      if (!root.contains(active)) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [onClose])
 
   useEffect(() => {
     if (mode !== 'content') return
@@ -102,6 +149,7 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
 
   const open = (entry: Entry | undefined) => {
     if (!entry) return
+    skipRestoreRef.current = true
     if (entry.kind === 'file') {
       onOpenFile(entry.path)
       return
@@ -110,23 +158,18 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   }
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
-      return
-    }
-    const mod = event.ctrlKey || event.metaKey
-    if (event.key === 'ArrowDown' || (mod && event.key.toLowerCase() === 'n')) {
+    if (event.nativeEvent.isComposing) return
+    if (event.key === 'ArrowDown' || matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
       event.preventDefault()
       setActive((value) => Math.min(entries.length - 1, value + 1))
       return
     }
-    if (event.key === 'ArrowUp' || (mod && event.key.toLowerCase() === 'p')) {
+    if (event.key === 'ArrowUp' || matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
       event.preventDefault()
       setActive((value) => Math.max(0, value - 1))
       return
     }
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' && document.activeElement === inputRef.current) {
       event.preventDefault()
       open(entries[active])
     }
@@ -136,7 +179,14 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
 
   return (
     <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="palette" onKeyDown={onKeyDown}>
+      <div
+        ref={paletteRef}
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onKeyDown={onKeyDown}
+      >
         <div className="palette-head">
           <span className="palette-title">{title}</span>
           {mode === 'content' && (
@@ -159,7 +209,7 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
           spellCheck={false}
         />
 
-        <div className="palette-results" ref={listRef}>
+        <div className="palette-results" ref={listRef} role="listbox" aria-label={title}>
           {mode === 'files' && entries.length === 0 && <div className="palette-empty">No files</div>}
 
           {mode === 'files' &&

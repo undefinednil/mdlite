@@ -1,21 +1,24 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { AppSettings, FileDoc, RootEntry, TreeNode } from '../shared/types'
 import { ApiError, api } from './api'
 import { Editor } from './components/Editor'
-import { FileTree } from './components/FileTree'
+import { FileTree, type FileTreeHandle } from './components/FileTree'
 import { FolderView } from './components/FolderView'
 import { MarkdownView } from './components/MarkdownView'
 import { MediaView } from './components/MediaView'
 import { Palette, type PaletteMode } from './components/Palette'
 import { SettingsView } from './components/SettingsView'
+import { TrashView } from './components/TrashView'
 import { DialogHost } from './components/DialogHost'
-import { askConfirm } from './lib/dialogs'
 import { defaultAppSettings } from './lib/settings'
+import { askSave, isDialogOpen } from './lib/dialogs'
 import logoUrl from './assets/logo.png'
-import { ancestors, baseName, canEdit, dirname, fileKind, formatKind } from './lib/paths'
+import { ancestors, baseName, canEdit, contentHash, dirname, fileKind, formatKind, isSameOrInside, remapPath } from './lib/paths'
 import { defaultVimSettings, loadVimSettings, type VimSettings } from './lib/vimrc'
-import { matchesCommand } from './lib/shortcuts'
+import { isMacPlatform, isRecordingShortcut, matchesCommand } from './lib/shortcuts'
+import { appShortcutAllowed } from './lib/keyboard'
+import { createSmoothScroller } from './lib/scroll'
 import { applyVimSettings } from './lib/vim'
 
 const ExcalidrawView = lazy(() => import('./components/ExcalidrawView'))
@@ -79,30 +82,41 @@ export default function App() {
   const [rootPath, setRootPath] = useState('')
   const [roots, setRoots] = useState<RootEntry[]>([])
   const [activeRootId, setActiveRootId] = useState('')
+  const [infoReady, setInfoReady] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showTrash, setShowTrash] = useState(false)
   const [vim, setVim] = useState<VimSettings>(defaultVimSettings)
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings)
   const [settingsPath, setSettingsPath] = useState('')
   const [binaryDoc, setBinaryDoc] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [docVersion, setDocVersion] = useState(0)
+  const [loadTick, setLoadTick] = useState(0)
   const [scratch, setScratch] = useState<{ name: string; content: string } | null>(null)
   const [dragging, setDragging] = useState(false)
 
   const treeFocusRef = useRef<(() => void) | null>(null)
+  const fileTreeRef = useRef<FileTreeHandle>(null)
   const mainFocusRef = useRef<(() => void) | null>(null)
   const insertTextRef = useRef<((text: string) => void) | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const settingsButtonRef = useRef<HTMLButtonElement>(null)
+  const firstRunPromptRef = useRef(false)
 
   const requestRef = useRef(0)
-  const savingRef = useRef(false)
+  const rootEpochRef = useRef(0)
+  const docSaveRef = useRef<Promise<boolean> | null>(null)
   const focusOnReadyRef = useRef(false)
   const scrollRatios = useRef(new Map<string, number>())
   const scrollRef = useRef<HTMLDivElement>(null)
+  const smoothScrollRef = useRef(createSmoothScroller())
+  const topArmedRef = useRef(0)
   const draftRef = useRef(draft)
   draftRef.current = draft
 
   const activePath = scratch ? scratch.name : selected
   const kind = activePath ? fileKind(activePath) : null
-  const editable = selected ? canEdit(selected) || kind === 'excalidraw' : false
+  const editable = activePath ? canEdit(activePath) || kind === 'excalidraw' : false
   const dirty = doc !== null && editable && draft !== doc.content
 
   const scratchRef = useRef(scratch)
@@ -121,6 +135,10 @@ export default function App() {
   stateRef.current = { selected, dirty, doc, mode, binaryDoc }
 
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+  const settingsSeqRef = useRef(0)
+  const settingsFlushRef = useRef<(() => void) | null>(null)
 
   const files = useMemo(() => collectFiles(tree), [tree])
 
@@ -133,6 +151,8 @@ export default function App() {
       setActiveRootId(info.id)
     } catch {
       return
+    } finally {
+      setInfoReady(true)
     }
   }, [])
 
@@ -155,6 +175,11 @@ export default function App() {
   }, [refreshInfo])
 
   useEffect(() => {
+    if (!infoReady) return
+    if (!activeRootId) {
+      setTree([])
+      return
+    }
     let alive = true
     api
       .tree()
@@ -167,9 +192,11 @@ export default function App() {
     return () => {
       alive = false
     }
-  }, [treeTick])
+  }, [treeTick, activeRootId, infoReady])
 
   useEffect(() => {
+    const id = ++requestRef.current
+    setLoadError(null)
     if (scratch) return
     setBinaryDoc(false)
     if (!selected) {
@@ -190,7 +217,6 @@ export default function App() {
       return
     }
 
-    const id = ++requestRef.current
     setStatus('loading')
     api
       .read(selected)
@@ -200,6 +226,7 @@ export default function App() {
         setDraft(result.content)
         setConflict(null)
         setStatus('ready')
+        setDocVersion((value) => value + 1)
         setRecents((prev) => [result.path, ...prev.filter((path) => path !== result.path)].slice(0, 5))
       })
       .catch((err: ApiError) => {
@@ -212,19 +239,26 @@ export default function App() {
           setStatus('ready')
           return
         }
+        setDoc(null)
+        setDraft('')
+        setConflict(null)
+        setBinaryDoc(false)
+        setLoadError(err.message)
         setError(err.message)
         setStatus('error')
       })
-  }, [selected, scratch])
+  }, [selected, scratch, loadTick])
 
   useEffect(() => {
-    const title = showSettings
-      ? 'Settings — mdlite'
-      : activePath
-        ? `${baseName(activePath)} — mdlite`
-        : 'mdlite'
+    const title = showTrash
+      ? 'Trash — mdlite'
+      : showSettings
+        ? 'Settings — mdlite'
+        : activePath
+          ? `${baseName(activePath)} — mdlite`
+          : 'mdlite'
     void getCurrentWindow().setTitle(title)
-  }, [activePath, showSettings])
+  }, [activePath, showSettings, showTrash])
 
   const activeScroller = useCallback((): HTMLElement | null => {
     const body = scrollRef.current
@@ -268,11 +302,93 @@ export default function App() {
     applyScrollRatio(scrollRatios.current.get(doc.path) ?? 0)
   }, [status, doc?.path, applyScrollRatio])
 
+  const save = useCallback(async (force = false, contentOverride?: string): Promise<boolean> => {
+    if (scratchRef.current) {
+      const { save: saveAs } = await import('@tauri-apps/plugin-dialog')
+      const target = await saveAs({ defaultPath: scratchRef.current.name })
+      if (!target) return false
+      try {
+        await api.saveText(target, contentOverride ?? draftRef.current)
+        setNotice(`saved ${target}`)
+        setSavedAt(Date.now())
+        return true
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+        return false
+      }
+    }
+
+    if (docSaveRef.current) await docSaveRef.current
+
+    const current = stateRef.current.doc
+    if (!current) return true
+    const content = contentOverride ?? draftRef.current
+    if (!force && content === current.content) return true
+
+    const task = (async () => {
+      try {
+        const result = await api.save(current.path, content, current.mtime, current.size, contentHash(current.content), force)
+        if (stateRef.current.doc?.path !== current.path) return true
+        const latest = stateRef.current.doc
+        const updated = { ...latest, content, mtime: result.mtime, size: result.size }
+        stateRef.current = { ...stateRef.current, doc: updated }
+        setDoc(updated)
+        setConflict(null)
+        setSavedAt(Date.now())
+        setTreeTick((value) => value + 1)
+        return true
+      } catch (err) {
+        if (stateRef.current.doc?.path !== current.path) return true
+        const apiError = err as ApiError
+        if (apiError.kind === 'conflict' && typeof apiError.mtime === 'number') {
+          setConflict({ mtime: apiError.mtime, content: apiError.content ?? '' })
+        } else {
+          setError(apiError.message)
+        }
+        return false
+      }
+    })()
+
+    docSaveRef.current = task
+    return task.finally(() => {
+      if (docSaveRef.current === task) docSaveRef.current = null
+    })
+  }, [])
+
+  const confirmSave = useCallback(async (): Promise<boolean> => {
+    const current = stateRef.current.doc
+    if (!current) return true
+    if (current.content === draftRef.current) return true
+    const choice = await askSave(`Save changes to ${baseName(current.path)}?`)
+    if (choice === 'cancel') return false
+    if (choice === 'discard') {
+      draftRef.current = current.content
+      setDraft(current.content)
+      setConflict(null)
+      setDocVersion((value) => value + 1)
+      return true
+    }
+    return save()
+  }, [save])
+
   const selectFile = useCallback(
-    async (path: string, target?: JumpTarget) => {
-      if (stateRef.current.dirty && !(await askConfirm('Discard unsaved changes?'))) return
+    async (path: string, target?: JumpTarget, focusMain = true) => {
+      if (!(await confirmSave())) return
+      if (path === stateRef.current.selected && stateRef.current.doc) {
+        setShowSettings(false)
+        setShowTrash(false)
+        setMode('view')
+        setJump(target ?? null)
+        requestAnimationFrame(() => {
+          if (mainFocusRef.current) mainFocusRef.current()
+          else scrollRef.current?.focus()
+        })
+        return
+      }
       const dir = dirname(path)
-      focusOnReadyRef.current = true
+      focusOnReadyRef.current = focusMain
+      setShowSettings(false)
+      setShowTrash(false)
       setScratch(null)
       setSelected(path)
       setCurrentDir(dir)
@@ -284,12 +400,22 @@ export default function App() {
         return next
       })
     },
-    [],
+    [confirmSave],
+  )
+
+  const selectFileFromTree = useCallback(
+    (path: string, focusMain = true) => {
+      void selectFile(path, undefined, focusMain)
+    },
+    [selectFile],
   )
 
   const openDir = useCallback(
     async (dir: string) => {
-      if (stateRef.current.dirty && !(await askConfirm('Discard unsaved changes?'))) return
+      if (!(await confirmSave())) return
+      focusOnReadyRef.current = false
+      setShowSettings(false)
+      setShowTrash(false)
       setScratch(null)
       setSelected(null)
       setCurrentDir(dir)
@@ -304,51 +430,12 @@ export default function App() {
         return next
       })
     },
-    [],
+    [confirmSave],
   )
 
-  const save = useCallback(async (force = false, contentOverride?: string) => {
-    if (scratchRef.current) {
-      const { save } = await import('@tauri-apps/plugin-dialog')
-      const target = await save({ defaultPath: scratchRef.current.name })
-      if (!target) return
-      await api.saveText(target, draftRef.current)
-      setNotice(`saved ${target}`)
-      setSavedAt(Date.now())
-      return
-    }
-    const current = stateRef.current.doc
-    if (!current || savingRef.current) return
-    const content = contentOverride ?? draftRef.current
-    if (!force && content === current.content) return
-    savingRef.current = true
-    try {
-      const result = await api.save(current.path, content, current.mtime, force)
-      const updated = { ...current, content, mtime: result.mtime, size: result.size }
-      stateRef.current = { ...stateRef.current, doc: updated }
-      setDoc(updated)
-      setConflict(null)
-      setSavedAt(Date.now())
-      setTreeTick((value) => value + 1)
-    } catch (err) {
-      const apiError = err as ApiError
-      if (apiError.kind === 'conflict' && typeof apiError.mtime === 'number') {
-        setConflict({ mtime: apiError.mtime, content: apiError.content ?? '' })
-      } else {
-        setError(apiError.message)
-      }
-    } finally {
-      savingRef.current = false
-    }
+  const handleSourceChange = useCallback((next: string) => {
+    setDraft(next)
   }, [])
-
-  const handleSourceChange = useCallback(
-    (next: string) => {
-      setDraft(next)
-      void save(false, next)
-    },
-    [save],
-  )
 
   const insertMedia = useCallback(async (file: File): Promise<string | null> => {
     const current = stateRef.current.doc
@@ -400,18 +487,33 @@ export default function App() {
     }
   }, [])
 
-  const toggleMode = useCallback(() => {
+  const toggleMode = useCallback(async () => {
     const path = stateRef.current.selected
     const ratio = readScrollRatio()
+    const next = stateRef.current.mode === 'view' ? 'edit' : 'view'
+    if (next === 'view' && !(await confirmSave())) return
     if (path) scrollRatios.current.set(path, ratio)
-    setMode((value) => (value === 'view' ? 'edit' : 'view'))
+    setMode(next)
     applyScrollRatio(ratio)
-  }, [readScrollRatio, applyScrollRatio])
+    requestAnimationFrame(() => {
+      if (next === 'edit') mainFocusRef.current?.()
+      else scrollRef.current?.focus()
+    })
+  }, [readScrollRatio, applyScrollRatio, confirmSave])
 
   const resetForRoot = useCallback(() => {
+    requestRef.current += 1
+    rootEpochRef.current += 1
+    focusOnReadyRef.current = false
+    setLoadError(null)
+    setRecents([])
+    setCycle(null)
+    scrollRatios.current.clear()
     setSelected(null)
     setScratch(null)
     setCurrentDir('')
+    setShowSettings(false)
+    setShowTrash(false)
     setExpanded(new Set())
     setDoc(null)
     setDraft('')
@@ -419,55 +521,122 @@ export default function App() {
     setJump(null)
     setMode('view')
     setConflict(null)
+    setBinaryDoc(false)
     setTreeTick((value) => value + 1)
   }, [])
 
   const switchRoot = useCallback(
     async (id: string) => {
+      if (!(await confirmSave())) return
       await api.setRoot(id)
       await refreshInfo()
       resetForRoot()
     },
-    [refreshInfo, resetForRoot],
+    [refreshInfo, resetForRoot, confirmSave],
   )
 
   const addRootFolder = useCallback(
     async (path: string, name?: string) => {
-      await api.addRoot(path, name)
+      const { root } = await api.addRoot(path, name)
+      if (!activeRootId) {
+        await api.setRoot(root.id)
+        resetForRoot()
+      }
       await refreshInfo()
     },
-    [refreshInfo],
+    [refreshInfo, resetForRoot, activeRootId],
   )
+
+  const chooseRootFolder = useCallback(async () => {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const picked = await open({ directory: true, multiple: false, title: 'Choose a folder' })
+    if (typeof picked !== 'string') return
+    try {
+      await addRootFolder(picked)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [addRootFolder])
+
+  useEffect(() => {
+    if (!infoReady || roots.length > 0 || firstRunPromptRef.current) return
+    firstRunPromptRef.current = true
+    void chooseRootFolder()
+  }, [infoReady, roots.length, chooseRootFolder])
 
   const removeRootFolder = useCallback(
     async (id: string) => {
+      if (!(await confirmSave())) return
       await api.removeRoot(id)
       await refreshInfo()
       resetForRoot()
     },
-    [refreshInfo, resetForRoot],
+    [refreshInfo, resetForRoot, confirmSave],
   )
 
-  const openSettings = useCallback(() => {
+  const openSettings = useCallback(async () => {
+    if (!(await confirmSave())) return
+    setShowTrash(false)
     setShowSettings(true)
-  }, [])
+  }, [confirmSave])
+
+  const openTrash = useCallback(async () => {
+    if (showTrash) {
+      setShowTrash(false)
+      requestAnimationFrame(() => {
+        if (mainFocusRef.current) mainFocusRef.current()
+        else scrollRef.current?.focus()
+      })
+      return
+    }
+    if (!activeRootId) return
+    if (!(await confirmSave())) return
+    setShowSettings(false)
+    setShowTrash(true)
+  }, [activeRootId, confirmSave, showTrash])
 
   const closeSettings = useCallback(() => {
     setShowSettings(false)
+    requestAnimationFrame(() => settingsButtonRef.current?.focus())
   }, [])
 
   const updateSettings = useCallback((next: AppSettings) => {
+    const previous = settingsRef.current
+    settingsRef.current = next
     setSettings(next)
+    const seq = ++settingsSeqRef.current
     saveChainRef.current = saveChainRef.current
       .catch(() => undefined)
       .then(async () => {
         const data = await api.saveSettings(next)
         setSettingsPath(data.path)
-        const vimSettings = await loadVimSettings(true)
-        applyVimSettings(vimSettings, next.vimEnabled)
-        setVim(vimSettings)
+        if (seq !== settingsSeqRef.current) return
+        settingsRef.current = data.settings
+        setSettings(data.settings)
+        const vimChanged =
+          data.settings.vimEnabled !== previous.vimEnabled ||
+          JSON.stringify(data.settings.vimrc) !== JSON.stringify(previous.vimrc)
+        if (vimChanged) {
+          const vimSettings = await loadVimSettings(true)
+          applyVimSettings(vimSettings, data.settings.vimEnabled)
+          setVim(vimSettings)
+        }
       })
-      .catch((err: Error) => setError(err.message))
+      .catch(async (err: Error) => {
+        if (seq !== settingsSeqRef.current) return
+        setError(err.message)
+        try {
+          const data = await api.settings()
+          settingsRef.current = data.settings
+          setSettings(data.settings)
+          setSettingsPath(data.path)
+          const vimSettings = await loadVimSettings(true)
+          applyVimSettings(vimSettings, data.settings.vimEnabled)
+          setVim(vimSettings)
+        } catch {
+          return
+        }
+      })
   }, [])
 
   const focusMain = useCallback(() => {
@@ -490,67 +659,155 @@ export default function App() {
   }, [status, doc?.path, focusMain])
 
   useEffect(() => {
+    topArmedRef.current = 0
+    smoothScrollRef.current.cancel()
+  }, [selected, mode])
+
+  useEffect(() => {
+    const element = scrollRef.current
+    if (!element) return
+    const cancel = () => smoothScrollRef.current.cancel()
+    element.addEventListener('wheel', cancel, { passive: true })
+    element.addEventListener('touchstart', cancel, { passive: true })
+    element.addEventListener('pointerdown', cancel, { passive: true })
+    return () => {
+      smoothScrollRef.current.cancel()
+      element.removeEventListener('wheel', cancel)
+      element.removeEventListener('touchstart', cancel)
+      element.removeEventListener('pointerdown', cancel)
+    }
+  }, [])
+
+  const closePalette = useCallback(() => setPalette(null), [])
+
+  const runAppShortcut = useCallback((event: KeyboardEvent): boolean => {
+    if (matchesCommand(settings.shortcuts, 'app.focusTree', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      treeFocusRef.current?.()
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.focusMain', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusMain()
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.toggleEdit', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (stateRef.current.doc) void toggleMode()
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.findFile', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      setPalette('files')
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.searchContent', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      setPalette('content')
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.save', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      void save()
+      return true
+    }
+    return false
+  }, [settings.shortcuts, toggleMode, focusMain, save])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isDialogOpen() || isRecordingShortcut()) return
+      if (
+        !appShortcutAllowed(event, {
+          target: event.target instanceof Element ? event.target : null,
+          mac: isMacPlatform(),
+          paletteOpen: Boolean(palette),
+          settingsOpen: showSettings,
+          cycleOpen: Boolean(cycle),
+          save: matchesCommand(settings.shortcuts, 'app.save', event),
+          toggle: matchesCommand(settings.shortcuts, 'app.toggleEdit', event),
+        })
+      ) {
+        return
+      }
+      runAppShortcut(event)
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [runAppShortcut, settings.shortcuts, palette, showSettings, cycle])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isDialogOpen() || isRecordingShortcut() || event.isComposing || event.defaultPrevented) return
+      if (palette || showSettings) return
       const target = event.target instanceof Element ? event.target : null
-      const typing = Boolean(target?.closest('input, textarea, select, [contenteditable="true"], .cm-editor'))
+      const typing = Boolean(
+        target?.closest(
+          'input, textarea, select, [contenteditable="true"], .cm-editor, .excalidraw-host',
+        ),
+      )
       const mod = event.metaKey || event.ctrlKey
       const plain = !mod && !event.altKey
 
-      if (plain) {
-        if (event.defaultPrevented) return
-        if (event.key === 'Escape') {
-          setPalette(null)
-          return
-        }
-        if (!typing && stateRef.current.doc && stateRef.current.mode === 'view') {
-          const scroll = (direction: number) => {
-            const element = activeScroller()
-            if (!element) return false
+      if (plain && event.key === 'Escape') {
+        topArmedRef.current = 0
+        setPalette(null)
+        setShowTrash(false)
+        return
+      }
+      if (!typing && stateRef.current.doc && stateRef.current.mode === 'view') {
+        const element = activeScroller()
+        if (element) {
+          const activeName = stateRef.current.selected ?? scratchRef.current?.name ?? ''
+          const viewKind = activeName ? fileKind(activeName) : null
+          if (viewKind === 'markdown' && matchesCommand(settings.shortcuts, 'tree.top', event)) {
             event.preventDefault()
-            element.scrollBy({ top: direction * 96 })
-            return true
+            const now = Date.now()
+            if (now - topArmedRef.current < 1000) {
+              topArmedRef.current = 0
+              smoothScrollRef.current.to(element, 0)
+            } else {
+              topArmedRef.current = now
+            }
+            return
           }
-          if (matchesCommand(settings.shortcuts, 'tree.down', event) && scroll(1)) return
-          if (matchesCommand(settings.shortcuts, 'tree.up', event) && scroll(-1)) return
+          if (viewKind === 'markdown' && matchesCommand(settings.shortcuts, 'tree.bottom', event)) {
+            event.preventDefault()
+            topArmedRef.current = 0
+            smoothScrollRef.current.to(element, element.scrollHeight)
+            return
+          }
+          if (matchesCommand(settings.shortcuts, 'tree.down', event)) {
+            event.preventDefault()
+            topArmedRef.current = 0
+            smoothScrollRef.current.by(element, 96)
+            return
+          }
+          if (matchesCommand(settings.shortcuts, 'tree.up', event)) {
+            event.preventDefault()
+            topArmedRef.current = 0
+            smoothScrollRef.current.by(element, -96)
+            return
+          }
         }
-        if (typing) return
+        topArmedRef.current = 0
       }
+      if (typing) return
 
-      if (matchesCommand(settings.shortcuts, 'app.focusTree', event)) {
-        event.preventDefault()
-        treeFocusRef.current?.()
-        return
-      }
-      if (matchesCommand(settings.shortcuts, 'app.focusMain', event)) {
-        event.preventDefault()
-        focusMain()
-        return
-      }
-      if (matchesCommand(settings.shortcuts, 'app.toggleEdit', event)) {
-        event.preventDefault()
-        if (stateRef.current.doc) toggleMode()
-        return
-      }
-      if (matchesCommand(settings.shortcuts, 'app.findFile', event)) {
-        event.preventDefault()
-        setPalette('files')
-        return
-      }
-      if (matchesCommand(settings.shortcuts, 'app.searchContent', event)) {
-        event.preventDefault()
-        setPalette('content')
-        return
-      }
-      if (matchesCommand(settings.shortcuts, 'app.save', event)) {
-        event.preventDefault()
-        void save()
-      }
+      runAppShortcut(event)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [save, toggleMode, focusMain, activeScroller, settings.shortcuts])
+  }, [runAppShortcut, activeScroller, settings.shortcuts, palette, showSettings])
 
   const openScratchFile = useCallback(async (file: File) => {
+    if (!(await confirmSave())) return
     if (file.size > 4_000_000) {
       setError('File is too large to open')
       return
@@ -577,10 +834,16 @@ export default function App() {
         return
       }
     }
+    requestRef.current += 1
+    focusOnReadyRef.current = false
+    setShowSettings(false)
+    setShowTrash(false)
     setSelected(null)
     setBinaryDoc(false)
+    setLoadError(null)
     setScratch({ name: file.name, content })
     setDoc({ path: file.name, content, mtime: 0, size: file.size })
+    setDocVersion((value) => value + 1)
     setDraft(content)
     setMode('view')
     setConflict(null)
@@ -600,6 +863,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isDialogOpen() || isRecordingShortcut() || event.isComposing) return
       if (event.key === 'Escape' && cycleRef.current) {
         event.preventDefault()
         setCycle(null)
@@ -622,7 +886,7 @@ export default function App() {
     }
 
     const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== 'Control') return
+      if (event.key !== 'Control' || isDialogOpen() || isRecordingShortcut()) return
       const current = cycleRef.current
       if (!current) return
       setCycle(null)
@@ -643,17 +907,26 @@ export default function App() {
     let closing = false
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
-        if (closing || !stateRef.current.dirty) return
-        event.preventDefault()
-        if (!(await askConfirm('Discard unsaved changes and close?'))) return
+        if (closing) {
+          event.preventDefault()
+          return
+        }
         closing = true
+        event.preventDefault()
+        settingsFlushRef.current?.()
+        if (!(await confirmSave())) {
+          closing = false
+          return
+        }
+        if (docSaveRef.current) await docSaveRef.current.catch(() => undefined)
+        await saveChainRef.current.catch(() => undefined)
         await getCurrentWindow().destroy()
       })
       .then((fn) => {
         unlisten = fn
       })
     return () => unlisten?.()
-  }, [])
+  }, [confirmSave])
 
   useEffect(() => {
     const unsubscribe = api.subscribeChanges(async (paths) => {
@@ -668,13 +941,26 @@ export default function App() {
 
       try {
         const fresh = await api.read(current.selected)
-        if (stateRef.current.selected !== current.selected) return
-        if (current.doc && fresh.mtime === current.doc.mtime) return
-        if (current.dirty) {
-          setConflict({ mtime: fresh.mtime, content: fresh.content })
-        } else {
+        const latest = stateRef.current
+        if (latest.selected !== current.selected || !latest.doc) return
+        if (fresh.mtime === latest.doc.mtime && fresh.content === latest.doc.content) return
+        if (fresh.content === draftRef.current) {
+          setDoc((doc) =>
+            doc && doc.path === fresh.path
+              ? { ...doc, content: fresh.content, mtime: fresh.mtime, size: fresh.size }
+              : doc,
+          )
+          setConflict(null)
+          setDocVersion((value) => value + 1)
+          return
+        }
+        if (latest.doc.content === draftRef.current) {
           setDoc(fresh)
           setDraft(fresh.content)
+          setConflict(null)
+          setDocVersion((value) => value + 1)
+        } else {
+          setConflict({ mtime: fresh.mtime, content: fresh.content })
         }
       } catch {
         return
@@ -707,6 +993,49 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [notice])
 
+  const remapOpenPath = useCallback((from: string, to: string) => {
+    if (!from || from === to) return
+    const snapshot = stateRef.current
+    const selected = snapshot.selected && isSameOrInside(snapshot.selected, from)
+      ? remapPath(snapshot.selected, from, to)
+      : snapshot.selected
+    const doc = snapshot.doc && isSameOrInside(snapshot.doc.path, from)
+      ? { ...snapshot.doc, path: remapPath(snapshot.doc.path, from, to) }
+      : snapshot.doc
+    stateRef.current = { ...snapshot, selected, doc }
+    setSelected(selected)
+    if (doc !== snapshot.doc) setDoc(doc)
+    setCurrentDir((dir) => (dir && isSameOrInside(dir, from) ? remapPath(dir, from, to) : dir))
+    setExpanded((prev) => {
+      const next = new Set<string>()
+      for (const path of prev) next.add(remapPath(path, from, to))
+      return next
+    })
+    setRecents((prev) => prev.map((path) => remapPath(path, from, to)))
+    scrollRatios.current = new Map(
+      [...scrollRatios.current].map(([path, ratio]) => [remapPath(path, from, to), ratio]),
+    )
+  }, [])
+
+  const removeOpenPath = useCallback((path: string) => {
+    setCurrentDir((dir) => (dir && isSameOrInside(dir, path) ? dirname(path) : dir))
+    const snapshot = stateRef.current
+    if (!snapshot.selected || !isSameOrInside(snapshot.selected, path)) return
+    stateRef.current = { ...snapshot, selected: null, doc: null }
+    draftRef.current = ''
+    setSelected(null)
+    setDoc(null)
+    setDraft('')
+    setStatus('idle')
+    setConflict(null)
+    setMode('view')
+    setBinaryDoc(false)
+    setRecents((prev) => prev.filter((entry) => !isSameOrInside(entry, path)))
+    for (const key of [...scrollRatios.current.keys()]) {
+      if (isSameOrInside(key, path)) scrollRatios.current.delete(key)
+    }
+  }, [])
+
   const onToggle = useCallback((path: string) => {
     setExpanded((prev) => {
       const next = new Set(prev)
@@ -724,9 +1053,19 @@ export default function App() {
           type="button"
           className="btn"
           onClick={() => {
-            setDoc((current) => (current ? { ...current, content: conflict.content, mtime: conflict.mtime } : current))
-            setDraft(conflict.content)
-            setConflict(null)
+            void (async () => {
+              const current = stateRef.current.doc
+              if (!current) return
+              try {
+                const fresh = await api.read(current.path)
+                setDoc(fresh)
+                setDraft(fresh.content)
+                setConflict(null)
+                setDocVersion((value) => value + 1)
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              }
+            })()
           }}
         >
           Reload
@@ -742,10 +1081,44 @@ export default function App() {
     doc !== null &&
     !binaryDoc &&
     (kind === 'text' || (mode === 'edit' && (kind === 'markdown' || kind === 'svg')))
-  const showFloating = doc !== null && !binaryDoc && (kind === 'markdown' || kind === 'svg')
+  const showFloating =
+    !showSettings && !showTrash && doc !== null && !binaryDoc && (kind === 'markdown' || kind === 'svg')
 
   const body = (() => {
+    if (showTrash) {
+      return <TrashView onChanged={() => setTreeTick((value) => value + 1)} onError={setError} />
+    }
     if (status === 'loading') return <div className="centered muted">Loading…</div>
+    if (status === 'error') {
+      return (
+        <div className="centered muted error-state">
+          <div>{loadError ?? 'Could not open this file.'}</div>
+          <button type="button" className="btn" onClick={() => setLoadTick((value) => value + 1)}>
+            Try again
+          </button>
+        </div>
+      )
+    }
+
+    if (!infoReady) return <div className="centered muted">Loading…</div>
+
+    if (roots.length === 0) {
+      return (
+        <div className="welcome">
+          <img className="welcome-icon" src={logoUrl} alt="" />
+          <h1>Open a folder</h1>
+          <p className="muted">mdlite works on a folder of Markdown notes. Choose one to get started.</p>
+          <div className="welcome-actions">
+            <button type="button" className="btn primary" onClick={() => void chooseRootFolder()}>
+              Choose folder…
+            </button>
+            <button type="button" className="btn" onClick={() => void openSettings()}>
+              Settings
+            </button>
+          </div>
+        </div>
+      )
+    }
 
     if (!doc) {
       return (
@@ -756,6 +1129,9 @@ export default function App() {
           rootName={rootName}
           onOpenDir={openDir}
           onSelect={selectFile}
+          onContextMenu={(path, type, x, y) =>
+            fileTreeRef.current?.openContextMenu(path, type, x, y, focusMain)
+          }
         />
       )
     }
@@ -768,14 +1144,11 @@ export default function App() {
       return (
         <Suspense fallback={<div className="centered muted">Loading Excalidraw…</div>}>
           <ExcalidrawView
-            key={`${doc.path}:${doc.mtime}`}
+            key={`${docVersion}`}
             path={doc.path}
             content={draft}
             editing
             onChange={setDraft}
-            onAutoSave={() => {
-              if (!scratchRef.current) void save()
-            }}
           />
         </Suspense>
       )
@@ -784,7 +1157,7 @@ export default function App() {
     if (showEditor) {
       return (
         <Editor
-          key={`${doc.path}:${vim.sourceKey}:${settings.vimEnabled}`}
+          key={`${vim.sourceKey}:${settings.vimEnabled}`}
           value={draft}
           filePath={doc.path}
           settings={vim}
@@ -796,9 +1169,6 @@ export default function App() {
           onMedia={insertMedia}
           onChange={setDraft}
           onSave={() => void save()}
-          onAutoSave={() => {
-            if (!scratchRef.current) void save()
-          }}
         />
       )
     }
@@ -821,6 +1191,7 @@ export default function App() {
   return (
     <div
       className={`app ${dragging ? 'dragging' : ''}`}
+      style={{ '--main-width': `${settings.mainWidth ?? 100}%` } as CSSProperties}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes('Files')) return
         event.preventDefault()
@@ -865,31 +1236,61 @@ export default function App() {
             <button type="button" className="icon-btn" title="Search content (⌃G)" onClick={() => setPalette('content')}>
               <span className="material-symbols-rounded">manage_search</span>
             </button>
-            <button type="button" className="icon-btn" title="Settings" onClick={openSettings}>
+            <button
+              type="button"
+              className={`icon-btn ${showTrash ? 'active' : ''}`}
+              title="Trash"
+              disabled={roots.length === 0}
+              onClick={() => void openTrash()}
+            >
+              <span className="material-symbols-rounded">delete</span>
+            </button>
+            <button
+              ref={settingsButtonRef}
+              type="button"
+              className="icon-btn"
+              title="Settings"
+              onClick={() => void openSettings()}
+            >
               <span className="material-symbols-rounded">settings</span>
             </button>
           </div>
         </div>
 
-        <FileTree
-          nodes={tree}
-          shortcuts={settings.shortcuts}
-          focusRef={treeFocusRef}
-          selected={selected}
-          currentDir={currentDir}
-          expanded={expanded}
-          onToggle={onToggle}
-          onSelect={selectFile}
-          onOpenDir={openDir}
-          onChanged={() => setTreeTick((value) => value + 1)}
-          onError={setError}
-          onCollapseAll={() => setExpanded(new Set())}
-        />
+        {roots.length === 0 ? (
+          <div className="tree-placeholder muted">No folder open</div>
+        ) : (
+          <FileTree
+            ref={fileTreeRef}
+            key={activeRootId}
+            nodes={tree}
+            shortcuts={settings.shortcuts}
+            rootEpoch={rootEpochRef}
+            onFlush={confirmSave}
+            onRemapPath={remapOpenPath}
+            onPathRemoved={removeOpenPath}
+            focusRef={treeFocusRef}
+            selected={selected}
+            currentDir={currentDir}
+            expanded={expanded}
+            onToggle={onToggle}
+            onSelect={selectFileFromTree}
+            onOpenDir={openDir}
+            onChanged={() => setTreeTick((value) => value + 1)}
+            onError={setError}
+            onCollapseAll={() => setExpanded(new Set())}
+          />
+        )}
       </aside>
 
       <main className="main">
         <header className="main-head">
-          {activePath ? (
+          {showTrash ? (
+            <>
+              <span className="material-symbols-rounded head-icon">delete</span>
+              <span className="crumb">Trash</span>
+            </>
+          ) : activePath ? (
             <>
               <span className={`material-symbols-rounded head-icon`}>
                 {kind === 'markdown'
@@ -983,12 +1384,18 @@ export default function App() {
           )}
         </header>
 
-        {conflictBanner}
+        {!showSettings && !showTrash && conflictBanner}
 
         <div
-          className={`main-body ${showSettings ? 'view' : showEditor || kind === 'excalidraw' ? 'edit' : 'view'}`}
+          className={`main-body ${showSettings || showTrash ? 'view' : showEditor || kind === 'excalidraw' ? 'edit' : 'view'}`}
           ref={scrollRef}
           tabIndex={-1}
+          onContextMenu={(event) => {
+            if (showSettings || showTrash || doc || roots.length === 0) return
+            if ((event.target as HTMLElement).closest('.file-row')) return
+            event.preventDefault()
+            fileTreeRef.current?.openBackgroundMenu(currentDir, event.clientX, event.clientY, focusMain)
+          }}
         >
           {showSettings ? (
             <SettingsView
@@ -1002,6 +1409,7 @@ export default function App() {
               onAdd={addRootFolder}
               onRemove={removeRootFolder}
               onSettingsChange={updateSettings}
+              flushRef={settingsFlushRef}
               onClose={closeSettings}
             />
           ) : (
@@ -1013,7 +1421,7 @@ export default function App() {
           <button
             type="button"
             className="floating-toggle"
-            onClick={toggleMode}
+            onClick={() => void toggleMode()}
             title={`${mode === 'view' ? 'Edit' : 'View'} (⌃⇧E)`}
           >
             <span className="material-symbols-rounded">{mode === 'view' ? 'edit' : 'visibility'}</span>
@@ -1057,7 +1465,7 @@ export default function App() {
         <Palette
           mode={palette}
           files={files}
-          onClose={() => setPalette(null)}
+          onClose={closePalette}
           onOpenFile={(path, target) => {
             setPalette(null)
             selectFile(path, target)

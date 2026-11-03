@@ -1,4 +1,5 @@
 import { api } from '../api'
+import { contentHash } from './paths'
 import type { TreeNode } from '../../shared/types'
 
 function firstFile(nodes: TreeNode[]): string | null {
@@ -82,7 +83,7 @@ export async function runSelfTest(): Promise<void> {
   })
 
   await check('write', async () => {
-    const saved = await api.save('temp/__selftest.json', '', 0, true)
+    const saved = await api.save('temp/__selftest.json', '', 0, 0, contentHash(''), true)
     return saved
   })
 
@@ -104,6 +105,6 @@ export async function runSelfTest(): Promise<void> {
 
   report.finished = new Date().toISOString()
   await api
-    .save('temp/__selftest.json', JSON.stringify(report, null, 2), 0, true)
+    .save('temp/__selftest.json', JSON.stringify(report, null, 2), 0, 0, contentHash(''), true)
     .catch(() => undefined)
 }

@@ -7,7 +7,6 @@ interface Props {
   content: string
   editing: boolean
   onChange: (value: string) => void
-  onAutoSave?: () => void
 }
 
 function parseScene(content: string) {
@@ -46,27 +45,35 @@ function serialize(elements: readonly unknown[], appState: { viewBackgroundColor
   )
 }
 
-export default function ExcalidrawView({ path, content, editing, onChange, onAutoSave }: Props) {
+function sceneSignature(
+  elements: readonly Record<string, unknown>[],
+  appState: { viewBackgroundColor?: string; gridSize?: number | null },
+  files: Record<string, unknown>,
+) {
+  const elementBits = elements
+    .map((element) => `${element.id ?? ''}:${element.version ?? ''}:${element.versionNonce ?? ''}`)
+    .join('|')
+  return `${elementBits}|${appState.viewBackgroundColor ?? ''}|${appState.gridSize ?? ''}|${Object.keys(files).sort().join(',')}`
+}
+
+export default function ExcalidrawView({ path, content, editing, onChange }: Props) {
   const initialData = useMemo(() => parseScene(content), [path])
-  const settledRef = useRef(false)
+  const bootRef = useRef(true)
+  const firstChangeRef = useRef(true)
+  const lastSignatureRef = useRef(
+    sceneSignature(
+      initialData.elements as readonly Record<string, unknown>[],
+      initialData.appState,
+      initialData.files as Record<string, unknown>,
+    ),
+  )
   const hostRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const host = hostRef.current
-    if (!host) return
-    const onFocusOut = (event: FocusEvent) => {
-      const next = event.relatedTarget as Node | null
-      if (next && host.contains(next)) return
-      onAutoSave?.()
-    }
-    host.addEventListener('focusout', onFocusOut)
-    return () => host.removeEventListener('focusout', onFocusOut)
-  }, [onAutoSave])
-
-  useEffect(() => {
-    settledRef.current = false
+    bootRef.current = true
+    firstChangeRef.current = true
     const timer = setTimeout(() => {
-      settledRef.current = true
+      bootRef.current = false
     }, 900)
     return () => clearTimeout(timer)
   }, [path])
@@ -78,8 +85,20 @@ export default function ExcalidrawView({ path, content, editing, onChange, onAut
         initialData={initialData}
         viewModeEnabled={!editing}
         onChange={(elements, appState, files) => {
-          if (!editing || !settledRef.current) return
-          onChange(serialize(elements, appState, files as Record<string, unknown>))
+          if (!editing) return
+          const nextFiles = files as Record<string, unknown>
+          const signature = sceneSignature(
+            elements as readonly Record<string, unknown>[],
+            appState,
+            nextFiles,
+          )
+          if (signature === lastSignatureRef.current) return
+          lastSignatureRef.current = signature
+          if (bootRef.current && firstChangeRef.current) {
+            firstChangeRef.current = false
+            return
+          }
+          onChange(serialize(elements, appState, nextFiles))
         }}
       />
     </div>

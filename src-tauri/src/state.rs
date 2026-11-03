@@ -1,6 +1,8 @@
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -18,7 +20,7 @@ pub struct RootEntry {
     pub path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub roots: Vec<RootEntry>,
@@ -64,6 +66,20 @@ pub fn home_dir() -> PathBuf {
     }
 }
 
+pub fn expand_home(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    if trimmed == "~" {
+        return home_dir();
+    }
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
+        return home_dir().join(rest);
+    }
+    PathBuf::from(trimmed)
+}
+
 pub fn config_path() -> PathBuf {
     std::env::var_os("MDLITE_CONFIG")
         .map(PathBuf::from)
@@ -101,6 +117,9 @@ fn import_paths() -> Vec<PathBuf> {
 
 fn strip_unc(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().to_string();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{}", rest));
+    }
     if let Some(rest) = text.strip_prefix(r"\\?\") {
         return PathBuf::from(rest);
     }
@@ -108,11 +127,7 @@ fn strip_unc(path: PathBuf) -> PathBuf {
 }
 
 fn real_dir(target: &str) -> ApiResult<PathBuf> {
-    let expanded = if let Some(rest) = target.strip_prefix("~") {
-        home_dir().join(rest.trim_start_matches('/'))
-    } else {
-        PathBuf::from(target)
-    };
+    let expanded = expand_home(target);
     let canonical = expanded
         .canonicalize()
         .map_err(|_| ApiError::bad_request(format!("folder is not readable: {target}")))?;
@@ -122,39 +137,47 @@ fn real_dir(target: &str) -> ApiResult<PathBuf> {
     Ok(lexical(&strip_unc(canonical)))
 }
 
-fn seed() -> Config {
-    let candidate = std::env::var("MDLITE_ROOT").unwrap_or_else(|_| {
-        home_dir()
-            .join("git")
-            .join("notes")
-            .to_string_lossy()
-            .to_string()
-    });
-
-    let path = real_dir(&candidate).unwrap_or_else(|_| PathBuf::from(&candidate));
+fn seed_root() -> Option<RootEntry> {
+    let candidate = std::env::var("MDLITE_ROOT").ok()?;
+    let path = real_dir(&candidate).ok()?;
     let name = path
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string_lossy().to_string());
+    Some(RootEntry {
+        id: Uuid::new_v4().to_string(),
+        name,
+        path: path.to_string_lossy().to_string(),
+    })
+}
 
-    Config {
-        roots: vec![RootEntry {
-            id: Uuid::new_v4().to_string(),
-            name,
-            path: path.to_string_lossy().to_string(),
-        }],
-        active: String::new(),
-        settings: AppSettings::default(),
+fn seed() -> Config {
+    let mut config = Config::default();
+    if let Some(root) = seed_root() {
+        config.active = root.id.clone();
+        config.roots.push(root);
     }
-    .normalized()
+    config.normalized()
+}
+
+fn backup_corrupt(path: &Path) -> bool {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "mdlite.json".to_string());
+    fs::rename(path, path.with_file_name(format!("{name}.corrupt-{stamp}"))).is_ok()
 }
 
 impl Config {
     fn normalized(mut self) -> Self {
+        self.settings = self.settings.repair();
         if self.roots.is_empty() {
-            return seed();
-        }
-        if !self.roots.iter().any(|root| root.id == self.active) {
+            self.active.clear();
+        } else if !self.roots.iter().any(|root| root.id == self.active) {
             self.active = self.roots[0].id.clone();
         }
         self
@@ -162,54 +185,85 @@ impl Config {
 
     pub fn load() -> Self {
         let path = config_path();
-        if let Ok(raw) = fs::read_to_string(&path) {
-            if let Ok(config) = serde_json::from_str::<Config>(&raw) {
-                return config.normalized();
-            }
-        }
-        if std::env::var_os("MDLITE_CONFIG").is_none() {
-            for candidate in import_paths() {
-                if let Ok(raw) = fs::read_to_string(&candidate) {
-                    if let Ok(config) = serde_json::from_str::<Config>(&raw) {
-                        let config = config.normalized();
-                        config.persist().ok();
-                        return config;
+        match fs::read_to_string(&path) {
+            Ok(raw) => match serde_json::from_str::<Config>(&raw) {
+                Ok(config) => config.normalized(),
+                Err(_) => {
+                    let seeded = seed();
+                    if backup_corrupt(&path) {
+                        seeded.persist().ok();
+                    }
+                    seeded
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::env::var_os("MDLITE_CONFIG").is_none() {
+                    for candidate in import_paths() {
+                        if let Ok(raw) = fs::read_to_string(&candidate) {
+                            if let Ok(config) = serde_json::from_str::<Config>(&raw) {
+                                let config = config.normalized();
+                                config.persist().ok();
+                                return config;
+                            }
+                        }
                     }
                 }
+                seed()
             }
+            Err(_) => seed(),
         }
-        seed()
     }
 
     pub fn persist(&self) -> ApiResult<()> {
+        let raw = serde_json::to_string_pretty(self)
+            .map_err(|error| ApiError::new("state", error.to_string()))?;
         let path = config_path();
+        let path = fs::canonicalize(&path).unwrap_or(path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(self)
-            .map_err(|error| ApiError::new("state", error.to_string()))?;
         let name = path
             .file_name()
             .map(|value| value.to_string_lossy().to_string())
             .unwrap_or_else(|| "mdlite.json".to_string());
-        let temp = path.with_file_name(format!("{name}.tmp"));
-        fs::write(&temp, raw)?;
-        if cfg!(windows) && path.exists() {
-            fs::remove_file(&path)?;
+        let temp = path.with_file_name(format!("{name}.{}.tmp", Uuid::new_v4()));
+
+        let result: std::io::Result<()> = (|| {
+            let mut file = fs::File::create(&temp)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))?;
+            }
+            file.write_all(raw.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temp, &path)?;
+            #[cfg(unix)]
+            if let Some(parent) = path.parent() {
+                if let Ok(directory) = fs::File::open(parent) {
+                    directory.sync_all().ok();
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = result {
+            fs::remove_file(&temp).ok();
+            return Err(ApiError::io(&error));
         }
-        fs::rename(&temp, &path)?;
         Ok(())
     }
 
-    pub fn active(&self) -> &RootEntry {
+    pub fn active(&self) -> Option<&RootEntry> {
         self.roots
             .iter()
             .find(|root| root.id == self.active)
-            .unwrap_or(&self.roots[0])
+            .or_else(|| self.roots.first())
     }
 
-    pub fn active_path(&self) -> PathBuf {
-        PathBuf::from(&self.active().path)
+    pub fn active_path(&self) -> Option<PathBuf> {
+        self.active().map(|root| PathBuf::from(&root.path))
     }
 
     pub fn list(&self) -> Vec<RootEntry> {
@@ -217,15 +271,17 @@ impl Config {
     }
 
     pub fn set_active(&mut self, id: &str) -> ApiResult<RootEntry> {
-        let root = self
+        let mut next = self.clone();
+        let root = next
             .roots
             .iter()
             .find(|root| root.id == id)
             .ok_or_else(|| ApiError::not_found("unknown root"))?
             .clone();
         real_dir(&root.path)?;
-        self.active = root.id.clone();
-        self.persist()?;
+        next.active = root.id.clone();
+        next.persist()?;
+        *self = next;
         Ok(root)
     }
 
@@ -241,6 +297,7 @@ impl Config {
             return Ok(existing.clone());
         }
 
+        let mut next = self.clone();
         let root = RootEntry {
             id: Uuid::new_v4().to_string(),
             name: name
@@ -254,8 +311,9 @@ impl Config {
                 }),
             path: resolved_string,
         };
-        self.roots.push(root.clone());
-        self.persist()?;
+        next.roots.push(root.clone());
+        next.persist()?;
+        *self = next;
         Ok(root)
     }
 
@@ -263,16 +321,19 @@ impl Config {
         if self.roots.len() <= 1 {
             return Err(ApiError::bad_request("cannot remove the last root"));
         }
-        let index = self
+        let mut next = self.clone();
+        let index = next
             .roots
             .iter()
             .position(|root| root.id == id)
             .ok_or_else(|| ApiError::not_found("unknown root"))?;
-        self.roots.remove(index);
-        if self.active == id {
-            self.active = self.roots[0].id.clone();
+        next.roots.remove(index);
+        if next.active == id {
+            next.active = next.roots[0].id.clone();
         }
-        self.persist()
+        next.persist()?;
+        *self = next;
+        Ok(())
     }
 }
 
@@ -284,11 +345,11 @@ impl AppState {
         }
     }
 
-    pub fn root_path(&self) -> PathBuf {
+    pub fn root_path(&self) -> Option<PathBuf> {
         self.config
             .lock()
-            .map(|config| config.active_path())
-            .unwrap_or_else(|_| PathBuf::from("/"))
+            .ok()
+            .and_then(|config| config.active_path())
     }
 
     pub fn settings(&self) -> ApiResult<AppSettings> {
@@ -304,8 +365,10 @@ impl AppState {
             .config
             .lock()
             .map_err(|_| ApiError::new("state", "lock"))?;
-        config.settings = settings;
-        config.persist()?;
+        let mut next = config.clone();
+        next.settings = settings;
+        next.persist()?;
+        *config = next;
         Ok(config.settings.clone())
     }
 }
@@ -333,12 +396,59 @@ mod tests {
     fn settings_roundtrip_uses_camel_case() {
         let mut config = Config::default();
         config.settings.vimrc.mode = "inline".into();
-        config.settings.shortcuts.insert("tree.down".into(), "shift+j".into());
+        config
+            .settings
+            .shortcuts
+            .insert("tree.down".into(), "shift+j".into());
         let raw = serde_json::to_string(&config).unwrap();
         assert!(raw.contains("\"vimEnabled\""));
         assert!(raw.contains("\"wordWrap\""));
         assert!(raw.contains("\"settings\""));
         let loaded: Config = serde_json::from_str(&raw).unwrap();
         assert_eq!(loaded.settings.shortcuts.get("tree.down").unwrap(), "shift+j");
+    }
+
+    #[test]
+    fn empty_roots_keep_settings_and_stay_empty() {
+        let mut config = Config {
+            roots: Vec::new(),
+            active: String::new(),
+            settings: AppSettings::default(),
+        };
+        config.settings.word_wrap = false;
+        config.settings.vimrc.mode = "inline".into();
+        config.settings.vimrc.text = "set number".into();
+        let normalized = config.normalized();
+        assert!(normalized.roots.is_empty());
+        assert!(normalized.active.is_empty());
+        assert!(!normalized.settings.word_wrap);
+        assert_eq!(normalized.settings.vimrc.mode, "inline");
+    }
+
+    #[test]
+    fn invalid_settings_are_repaired_on_load() {
+        let config = Config {
+            roots: vec![RootEntry {
+                id: "a".into(),
+                name: "notes".into(),
+                path: "/tmp/notes".into(),
+            }],
+            active: "a".into(),
+            settings: AppSettings {
+                vimrc: crate::settings::VimrcConfig {
+                    mode: "Elsewhere".into(),
+                    path: "x".repeat(5000),
+                    text: "x".repeat(300_000),
+                },
+                ..AppSettings::default()
+            },
+        };
+        let normalized = config.normalized();
+        assert_eq!(normalized.settings.vimrc.mode, "auto");
+        assert!(normalized.settings.vimrc.path.is_empty());
+        assert_eq!(
+            normalized.settings.vimrc.text.chars().count(),
+            crate::settings::VIMRC_LIMIT
+        );
     }
 }

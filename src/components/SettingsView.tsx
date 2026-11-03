@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getVersion } from '@tauri-apps/api/app'
 import type { AppSettings, RootEntry, VimrcMode } from '../../shared/types'
-import { askConfirm } from '../lib/dialogs'
+import { askConfirm, isDialogOpen } from '../lib/dialogs'
 import {
   SHORTCUT_BY_ID,
   SHORTCUT_COMMANDS,
@@ -13,6 +13,7 @@ import {
   formatBinding,
   isCustomized,
   isReservedBinding,
+  setShortcutRecording,
 } from '../lib/shortcuts'
 import type { VimSettings } from '../lib/vimrc'
 
@@ -29,6 +30,7 @@ interface Props {
   onAdd: (path: string, name?: string) => Promise<void>
   onRemove: (id: string) => Promise<void>
   onSettingsChange: (settings: AppSettings) => void
+  flushRef?: { current: (() => void) | null }
   onClose: () => void
 }
 
@@ -80,6 +82,7 @@ export function SettingsView({
   onAdd,
   onRemove,
   onSettingsChange,
+  flushRef,
   onClose,
 }: Props) {
   const [tab, setTab] = useState<Tab>('roots')
@@ -88,14 +91,15 @@ export function SettingsView({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<AppSettings>(settings)
+  const [widthInput, setWidthInput] = useState(String(settings.mainWidth ?? 100))
   const [recording, setRecording] = useState<string | null>(null)
   const [recordError, setRecordError] = useState<string | null>(null)
   const [version, setVersion] = useState('')
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const navRef = useRef<HTMLElement>(null)
 
   const draftRef = useRef(draft)
   draftRef.current = draft
-  const latestRef = useRef(draft)
-  latestRef.current = draft
   const pendingRef = useRef(false)
   const propRef = useRef(settings)
   const sentRef = useRef<AppSettings | null>(null)
@@ -103,9 +107,13 @@ export function SettingsView({
   useEffect(() => {
     if (settings === propRef.current) return
     propRef.current = settings
-    if (settings === sentRef.current) return
+    if (settings === sentRef.current || pendingRef.current) return
     setDraft(settings)
   }, [settings])
+
+  useEffect(() => {
+    setWidthInput(String(draft.mainWidth ?? 100))
+  }, [draft.mainWidth])
 
   const update = useCallback((producer: (current: AppSettings) => AppSettings) => {
     pendingRef.current = true
@@ -126,9 +134,38 @@ export function SettingsView({
     return () => {
       if (!pendingRef.current) return
       pendingRef.current = false
-      onSettingsChange(latestRef.current)
+      onSettingsChange(draftRef.current)
     }
   }, [onSettingsChange])
+
+  useEffect(() => {
+    if (!flushRef) return
+    flushRef.current = () => {
+      if (!pendingRef.current) return
+      pendingRef.current = false
+      sentRef.current = draftRef.current
+      onSettingsChange(draftRef.current)
+    }
+    return () => {
+      flushRef.current = null
+    }
+  }, [flushRef, onSettingsChange])
+
+  useEffect(() => {
+    closeRef.current?.focus()
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.defaultPrevented) return
+      if (event.key !== 'Escape' || isDialogOpen()) return
+      if (document.querySelector('.palette, .cycle')) return
+      event.preventDefault()
+      onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
 
   useEffect(() => {
     let alive = true
@@ -143,7 +180,14 @@ export function SettingsView({
   }, [])
 
   useEffect(() => {
+    setRecording(null)
+    setRecordError(null)
+    setError(null)
+  }, [tab])
+
+  useEffect(() => {
     if (!recording) return
+    setShortcutRecording(true)
     const onKeyDown = (event: KeyboardEvent) => {
       event.preventDefault()
       event.stopPropagation()
@@ -180,7 +224,10 @@ export function SettingsView({
       setRecordError(null)
     }
     window.addEventListener('keydown', onKeyDown, true)
-    return () => window.removeEventListener('keydown', onKeyDown, true)
+    return () => {
+      setShortcutRecording(false)
+      window.removeEventListener('keydown', onKeyDown, true)
+    }
   }, [recording, update])
 
   const patchVimrc = (patch: Partial<AppSettings['vimrc']>) => {
@@ -208,6 +255,10 @@ export function SettingsView({
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
+      requestAnimationFrame(() => {
+        if (document.activeElement && document.activeElement !== document.body) return
+        navRef.current?.querySelector<HTMLElement>('.settings-nav-item.active')?.focus()
+      })
     }
   }
 
@@ -233,14 +284,23 @@ export function SettingsView({
   }
 
   return (
-    <div className="settings">
-      <nav className="settings-nav">
+    <div
+      className="settings"
+      onPointerDown={(event) => {
+        if (!recording) return
+        if ((event.target as HTMLElement).closest('.key-button')) return
+        setRecording(null)
+        setRecordError(null)
+      }}
+    >
+      <nav className="settings-nav" ref={navRef}>
         <div className="settings-nav-title">Settings</div>
         {TABS.map((entry) => (
           <button
             key={entry.key}
             type="button"
             className={`settings-nav-item ${tab === entry.key ? 'active' : ''}`}
+            aria-current={tab === entry.key ? 'page' : undefined}
             onClick={() => setTab(entry.key)}
           >
             <span className="material-symbols-rounded">{entry.icon}</span>
@@ -258,13 +318,18 @@ export function SettingsView({
             <h1>{activeTab.title}</h1>
             <p className="settings-sub">{activeTab.subtitle}</p>
           </div>
-          <button type="button" className="btn" onClick={onClose}>
+          <button ref={closeRef} type="button" className="btn" onClick={onClose}>
             Close
           </button>
         </header>
 
         {tab === 'roots' && (
           <>
+            {error && (
+              <div className="settings-error" role="alert">
+                {error}
+              </div>
+            )}
             <ul className="root-list">
               {roots.map((root) => {
                 const active = root.id === activeId
@@ -275,10 +340,12 @@ export function SettingsView({
                     </span>
                     <div className="root-body">
                       <div className="root-name">
-                        {root.name}
+                        <span className="root-name-text">{root.name}</span>
                         {active && <span className="root-active-badge">active</span>}
                       </div>
-                      <div className="root-path">{root.path}</div>
+                      <div className="root-path" title={root.path}>
+                        {root.path}
+                      </div>
                     </div>
                     <div className="root-actions">
                       {!active && (
@@ -309,27 +376,32 @@ export function SettingsView({
                 )
               })}
             </ul>
+            {roots.length === 1 && (
+              <p className="settings-note">The last folder cannot be removed.</p>
+            )}
 
             <section className="settings-section">
               <h2 className="settings-section-title">Add a folder</h2>
               <div className="settings-form">
                 <input
                   className="text-input"
+                  aria-label="Folder path"
                   placeholder="/absolute/path/to/folder"
                   value={path}
                   onChange={(event) => setPath(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') void add()
+                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) void add()
                   }}
                   spellCheck={false}
                 />
                 <input
                   className="text-input narrow"
+                  aria-label="Folder name (optional)"
                   placeholder="Name (optional)"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') void add()
+                    if (event.key === 'Enter' && !event.nativeEvent.isComposing) void add()
                   }}
                   spellCheck={false}
                 />
@@ -340,7 +412,6 @@ export function SettingsView({
                   Add
                 </button>
               </div>
-              {error && <div className="settings-error">{error}</div>}
               <p className="settings-note">
                 Your notes stay where they are. Removing a folder here only removes it from this list.
               </p>
@@ -392,6 +463,46 @@ export function SettingsView({
                     <span className="switch-track" />
                   </label>
                 </div>
+
+                <div className="setting-row">
+                  <div className="setting-copy">
+                    <div className="setting-title">Main area width</div>
+                    <p className="setting-help">
+                      Percentage of the main pane used by the content. The rest becomes horizontal
+                      padding; the sidebar keeps its width.
+                    </p>
+                  </div>
+                  <label className="setting-number">
+                    <input
+                      type="number"
+                      min={50}
+                      max={100}
+                      step={1}
+                      aria-label="Main area width"
+                      value={widthInput}
+                      onChange={(event) => {
+                        const next = event.target.value
+                        setWidthInput(next)
+                        const value = Number(next)
+                        if (Number.isFinite(value) && value >= 50 && value <= 100) {
+                          update((current) => ({ ...current, mainWidth: Math.round(value) }))
+                        }
+                      }}
+                      onBlur={() => {
+                        const parsed = widthInput.trim() === '' ? Number.NaN : Number(widthInput)
+                        const value = Number.isFinite(parsed)
+                          ? Math.min(100, Math.max(50, Math.round(parsed)))
+                          : (draftRef.current.mainWidth ?? 100)
+                        setWidthInput(String(value))
+                        update((current) => ({ ...current, mainWidth: value }))
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') event.currentTarget.blur()
+                      }}
+                    />
+                    <span>%</span>
+                  </label>
+                </div>
               </div>
             </section>
 
@@ -409,6 +520,7 @@ export function SettingsView({
                     key={mode.key}
                     type="button"
                     className={draft.vimrc.mode === mode.key ? 'active' : ''}
+                    aria-pressed={draft.vimrc.mode === mode.key}
                     onClick={() => patchVimrc({ mode: mode.key })}
                   >
                     {mode.label}
@@ -426,6 +538,7 @@ export function SettingsView({
                 <div className="settings-form">
                   <input
                     className="text-input mono"
+                    aria-label="Vimrc path"
                     placeholder="~/.vimrc or /absolute/path/to/vimrc"
                     value={draft.vimrc.path}
                     onChange={(event) => patchVimrc({ path: event.target.value })}
@@ -441,6 +554,7 @@ export function SettingsView({
                 <div className="settings-inline">
                   <textarea
                     className="settings-textarea"
+                    aria-label="Vimrc text"
                     placeholder={'set number\nset tabstop=2\nnnoremap <leader>w :w<CR>'}
                     value={draft.vimrc.text}
                     maxLength={200_000}
@@ -463,7 +577,7 @@ export function SettingsView({
                   <dd>{vim.mappings.length}</dd>
                 </div>
                 <div>
-                  <dt>Lines applied</dt>
+                  <dt>Parsed lines</dt>
                   <dd>{vim.applied}</dd>
                 </div>
                 <div>
@@ -539,6 +653,7 @@ export function SettingsView({
                         <button
                           type="button"
                           className={`key-button ${recordingThis ? 'recording' : ''} ${binding ? '' : 'empty'}`}
+                          aria-label={`${command.label}: ${recordingThis ? 'press keys' : formatBinding(binding)}`}
                           onClick={() => {
                             setRecordError(null)
                             setRecording(command.id)
@@ -571,17 +686,19 @@ export function SettingsView({
                 <dd>{vim.exists ? vim.source : 'Not set'}</dd>
               </dl>
               <p className="settings-note">
-                Roots, editor settings and shortcuts are stored in <code>~/.config/mdlite/mdlite.json</code>. Your
-                notes are never copied there. Set <code>MDLITE_CONFIG</code> to use another file.
+                Roots, editor settings and shortcuts are stored in{' '}
+                <code>{settingsPath || '~/.config/mdlite/mdlite.json'}</code>. Your notes are never copied there.
+                Set <code>MDLITE_CONFIG</code> before launch to use another file.
               </p>
             </section>
 
             <section className="settings-section">
               <h2 className="settings-section-title">Fixed keys</h2>
               <p className="setting-help">
-                <kbd>Ctrl</kbd>+<kbd>Tab</kbd> cycles recent files, <kbd>Enter</kbd> opens the highlighted row,
-                the arrow keys move through lists, and <kbd>Esc</kbd> closes the finder or a dialog. These cannot be
-                rebound.
+                <kbd>Ctrl</kbd>+<kbd>Tab</kbd> cycles recent files. <kbd>Enter</kbd> opens the highlighted row or
+                confirms a dialog, <kbd>Esc</kbd> cancels a dialog, closes the finder or closes Settings, and the
+                arrow keys move through lists. In the tree, Command/Ctrl with <kbd>N</kbd>, <kbd>P</kbd>, <kbd>A</kbd> or <kbd>←</kbd>,
+                and <kbd>Space</kbd>, are also fixed.
               </p>
             </section>
           </>

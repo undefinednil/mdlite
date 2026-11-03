@@ -157,7 +157,19 @@ function hashText(text: string): string {
   return Math.abs(value).toString(36)
 }
 
-function parseVimrc(text: string, source = ''): VimSettings {
+function updateFlagList(
+  current: string,
+  flag: string,
+  operation: 'add' | 'remove' | 'prepend',
+): string {
+  const flags = current.split(',').map((value) => value.trim()).filter(Boolean)
+  const next = flags.filter((value) => value !== flag)
+  if (operation === 'add') next.push(flag)
+  else if (operation === 'prepend') next.unshift(flag)
+  return next.join(',')
+}
+
+export function parseVimrc(text: string, source = ''): VimSettings {
   const settings: VimSettings = {
     ...defaultVimSettings,
     source,
@@ -172,23 +184,30 @@ function parseVimrc(text: string, source = ''): VimSettings {
     const trimmed = rawLine.trim()
     if (!trimmed || trimmed.startsWith('"')) continue
 
-    const head = trimmed.split(/\s+/)[0] ?? ''
-    const isMap = head in MAP_COMMANDS
-    const line = isMap ? trimmed : stripTrailingComment(trimmed).trim()
-    if (!line) continue
-
-    const letMatch = /^let\s+(mapleader|maplocalleader)\s*=\s*["']?(.+?)["']?$/.exec(line)
-    if (letMatch) {
-      settings.leader = letMatch[2] === ' ' ? ' ' : letMatch[2]
-      settings.applied++
+    const leaderMatch = /^let\s+(mapleader|maplocalleader)\s*=\s*(.+)$/.exec(trimmed)
+    if (leaderMatch) {
+      const rawValue = leaderMatch[2].trim()
+      const quoted = /^(["'])(.*?)\1/.exec(rawValue)
+      const value = quoted ? quoted[2] : (rawValue.split(/\s+/)[0] ?? '')
+      if (value) {
+        settings.leader = value
+        settings.applied++
+      } else {
+        settings.skipped.push(trimmed)
+      }
       continue
     }
+
+    const head = trimmed.split(/\s+/)[0] ?? ''
+    const isMap = Object.prototype.hasOwnProperty.call(MAP_COMMANDS, head)
+    const line = isMap ? trimmed : stripTrailingComment(trimmed).trim()
+    if (!line) continue
 
     const setMatch = /^(?:se|set|setlocal|setglobal)\s+(.+)$/.exec(line)
     if (setMatch) {
       let consumed = false
       for (const token of splitArgs(setMatch[1])) {
-        const assignment = /^([a-z]+)([=:.]?)(.*)$/i.exec(token)
+        const assignment = /^([a-z]+)([=:.]|\+=|-=|\^=)?(.*)$/i.exec(token)
         if (!assignment) continue
         const [, rawName, operator, rawValue] = assignment
         const name = rawName.toLowerCase()
@@ -212,6 +231,15 @@ function parseVimrc(text: string, source = ''): VimSettings {
         if (NUMBER_OPTIONS.has(name)) {
           const parsed = Number(rawValue)
           if (Number.isFinite(parsed)) settings.options[name] = parsed
+          consumed = true
+          continue
+        }
+        if (name === 'clipboard' && (operator === '+=' || operator === '-=' || operator === '^=')) {
+          let current = typeof settings.options[name] === 'string' ? settings.options[name] : ''
+          for (const flag of rawValue.split(',').map((value) => value.trim()).filter(Boolean)) {
+            current = updateFlagList(current, flag, operator === '+=' ? 'add' : operator === '-=' ? 'remove' : 'prepend')
+          }
+          settings.options[name] = current
           consumed = true
           continue
         }
