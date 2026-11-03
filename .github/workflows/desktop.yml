@@ -20,6 +20,9 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm run bundle:win
       - uses: actions/upload-artifact@v4
         with:
@@ -42,6 +45,9 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
       - run: npm run bundle:mac
       - uses: actions/upload-artifact@v4
         with:

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import type { TreeNode } from '../../shared/types'
 import { api } from '../api'
-import { baseName, dirname, globToRegExp, iconFor, iconTone, joinPath, kindGroup, type KindGroup } from '../lib/paths'
-import { askConfirm, askPrompt } from '../lib/dialogs'
-import { matchesCommand } from '../lib/shortcuts'
+import { ancestors, baseName, dirname, globToRegExp, iconFor, iconTone, joinPath, kindGroup, pasteDirectory, type KindGroup } from '../lib/paths'
+import { askConfirm, askFolder, askPrompt, type FolderChoice } from '../lib/dialogs'
+import { matchesBinding, matchesCommand } from '../lib/shortcuts'
+import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 const ROW = 26
 
@@ -42,12 +43,16 @@ function inSizeBucket(size: number, bucket: SizeBucket): boolean {
 interface Props {
   nodes: TreeNode[]
   shortcuts: Record<string, string>
+  rootEpoch: { current: number }
+  onFlush?: () => Promise<boolean>
+  onRemapPath: (from: string, to: string) => void
+  onPathRemoved: (path: string) => void
   focusRef?: { current: (() => void) | null }
   selected: string | null
   currentDir: string
   expanded: Set<string>
   onToggle: (path: string) => void
-  onSelect: (path: string) => void
+  onSelect: (path: string, focusMain?: boolean) => void
   onOpenDir: (path: string) => void
   onChanged: () => void
   onError: (message: string) => void
@@ -64,15 +69,40 @@ function sortNodes(nodes: TreeNode[], mode: SortMode): TreeNode[] {
   return copy
 }
 
-function prune(nodes: TreeNode[], keep: (node: TreeNode) => boolean): TreeNode[] {
+function collectFolders(nodes: TreeNode[]): FolderChoice[] {
+  const out: FolderChoice[] = [{ path: '', label: 'Root', depth: 0 }]
+  const walk = (list: TreeNode[], depth: number) => {
+    for (const node of list) {
+      if (node.type !== 'dir') continue
+      out.push({ path: node.path, label: baseName(node.path), depth })
+      walk(node.children ?? [], depth + 1)
+    }
+  }
+  walk(nodes, 1)
+  return out
+}
+
+function collectPaths(nodes: TreeNode[], out: Set<string> = new Set()): Set<string> {
+  for (const node of nodes) {
+    out.add(node.path)
+    if (node.children) collectPaths(node.children, out)
+  }
+  return out
+}
+
+function prune(
+  nodes: TreeNode[],
+  keep: (node: TreeNode) => boolean,
+  keepEmptyDir?: (node: TreeNode) => boolean,
+): TreeNode[] {
   const result: TreeNode[] = []
   for (const node of nodes) {
     if (node.type === 'file') {
       if (keep(node)) result.push(node)
       continue
     }
-    const children = prune(node.children ?? [], keep)
-    if (children.length) result.push({ ...node, children })
+    const children = prune(node.children ?? [], keep, keepEmptyDir)
+    if (children.length || keepEmptyDir?.(node)) result.push({ ...node, children })
   }
   return result
 }
@@ -82,9 +112,29 @@ interface UndoEntry {
   run: () => Promise<void>
 }
 
-export function FileTree({
+interface ContextMenuState {
+  x: number
+  y: number
+  path: string
+  type: 'dir' | 'file'
+  targets: string[]
+  focus: () => void
+  external?: boolean
+  background?: boolean
+}
+
+export interface FileTreeHandle {
+  openContextMenu: (path: string, type: 'dir' | 'file', x: number, y: number, focus: () => void) => void
+  openBackgroundMenu: (dir: string, x: number, y: number, focus: () => void) => void
+}
+
+export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   nodes,
   shortcuts,
+  rootEpoch,
+  onFlush,
+  onRemapPath,
+  onPathRemoved,
   focusRef,
   selected,
   currentDir,
@@ -95,7 +145,7 @@ export function FileTree({
   onChanged,
   onError,
   onCollapseAll,
-}: Props) {
+}: Props, ref) {
   const [filter, setFilter] = useState('')
   const [filterMode, setFilterMode] = useState<'contains' | 'glob' | 'regex'>('contains')
   const [sort, setSort] = useState<SortMode>('name')
@@ -111,9 +161,14 @@ export function FileTree({
   const [clipboard, setClipboard] = useState<{ path: string; mode: 'cut' | 'copy' } | null>(null)
   const [marked, setMarked] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState('')
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const undoStack = useRef<UndoEntry[]>([])
+  const busyRef = useRef(false)
+  const folderChoices = useMemo(() => collectFolders(nodes), [nodes])
+  const treePaths = useMemo(() => collectPaths(nodes), [nodes])
+
   const anchorRef = useRef<string | null>(null)
 
   const rows = useMemo(() => {
@@ -149,14 +204,18 @@ export function FileTree({
     }
 
     const source = active
-      ? prune(nodes, (node) => {
-          if (matcher && !matcher(node.path)) return false
-          if (after && node.mtime < after) return false
-          if (before && node.mtime > before) return false
-          if (kinds.size > 0 && !kinds.has(kindGroup(node.path))) return false
-          if (!inSizeBucket(node.size, sizeBucket)) return false
-          return true
-        })
+      ? prune(
+          nodes,
+          (node) => {
+            if (matcher && !matcher(node.path)) return false
+            if (after && node.mtime < after) return false
+            if (before && node.mtime > before) return false
+            if (kinds.size > 0 && !kinds.has(kindGroup(node.path))) return false
+            if (!inSizeBucket(node.size, sizeBucket)) return false
+            return true
+          },
+          (node) => Boolean(matcher && matcher(node.path)),
+        )
       : nodes
 
     const out: Row[] = []
@@ -172,6 +231,19 @@ export function FileTree({
     walk(source, 0)
     return out
   }, [nodes, filter, filterMode, sort, timeFilter, rangeFrom, rangeTo, kinds, sizeBucket, expanded])
+
+  useEffect(() => {
+    setMarked((prev) => {
+      const visible = new Set(rows.map((row) => row.node.path))
+      let changed = false
+      const next = new Set<string>()
+      for (const path of prev) {
+        if (visible.has(path)) next.add(path)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [rows])
 
   const activeFilterCount =
     (filter.trim() ? 1 : 0) + (timeFilter !== 'all' ? 1 : 0) + kinds.size + (sizeBucket !== 'any' ? 1 : 0)
@@ -222,6 +294,19 @@ export function FileTree({
       el.scrollTop = Math.max(0, top - el.clientHeight / 2)
     }
   }, [selected, rows])
+
+  useEffect(() => {
+    setContextMenu(null)
+  }, [rows])
+
+  useImperativeHandle(ref, () => ({
+    openContextMenu: (path, type, x, y, focus) => {
+      setContextMenu({ x, y, path, type, targets: [path], focus, external: true })
+    },
+    openBackgroundMenu: (dir, x, y, focus) => {
+      setContextMenu({ x, y, path: dir, type: 'dir', targets: [], focus, background: true })
+    },
+  }), [])
 
   const start = Math.max(0, Math.floor(scrollTop / ROW) - 10)
   const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / ROW) + 10)
@@ -292,24 +377,26 @@ export function FileTree({
     else onSelect(row.node.path)
   }
 
-  const targetDir = () => {
-    if (activeRow?.node.type === 'dir') return activeRow.node.path
-    if (activeRow) return dirname(activeRow.node.path)
-    return currentDir
-  }
+  const targetDir = (
+    path = activeRow?.node.path ?? null,
+    type = activeRow?.node.type ?? null,
+  ) => pasteDirectory(path, type, currentDir)
 
   const run = async (action: () => Promise<void>, message: string) => {
+    if (busyRef.current) return
+    busyRef.current = true
     try {
       await action()
       setStatus(message)
       onChanged()
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      busyRef.current = false
     }
   }
 
-  const newFile = async () => {
-    const dir = targetDir()
+  const newEntry = async (dir: string) => {
     const name = await askPrompt('New file name (end with / for a folder)')
     if (!name) return
     const isDir = name.endsWith('/')
@@ -322,49 +409,79 @@ export function FileTree({
         label: `create ${path}`,
         run: async () => {
           await api.trash(path)
+          onPathRemoved(path)
         },
       })
       setCursorPath(path)
-      if (!isDir) onSelect(path)
+      if (!isDir) onSelect(path, false)
       else onOpenDir(dir)
     }, `created ${path}`)
   }
 
-  const rename = async () => {
-    if (!activeRow) return
-    const from = activeRow.node.path
+  const newFile = async () => newEntry(targetDir())
+
+  const rename = async (path = activeRow?.node.path) => {
+    if (!path) return
+    const from = path
     const next = await askPrompt('Rename to', baseName(from))
     if (!next || next === baseName(from)) return
+    if (onFlush && !(await onFlush())) return
     void run(async () => {
       const result = await api.rename(from, next)
+      onRemapPath(from, result.path)
       undoStack.current.push({
         label: `rename ${from}`,
         run: async () => {
           await api.rename(result.path, baseName(from))
+          onRemapPath(result.path, from)
         },
       })
       setCursorPath(result.path)
-      if (selected === from) onSelect(result.path)
     }, `renamed ${from}`)
   }
 
   const collapseTargets = (paths: string[]) =>
     paths.filter((path) => !paths.some((other) => other !== path && path.startsWith(`${other}/`)))
 
-  const trash = async () => {
-    const targets = marked.size
-      ? collapseTargets([...marked])
-      : activeRow
-        ? [activeRow.node.path]
-        : []
+  const actionTargets = (path?: string) => {
+    if (path) return marked.has(path) ? collapseTargets([...marked]) : [path]
+    if (marked.size) return collapseTargets([...marked])
+    return activeRow ? [activeRow.node.path] : []
+  }
+
+  const trashTargets = async (targets: string[]) => {
     if (!targets.length) return
-    const label = targets.length === 1 ? `"${targets[0]}"` : `${targets.length} items`
+    const names = targets.map((path) => baseName(path))
+    const label =
+      targets.length === 1
+        ? `"${targets[0]}"`
+        : `${targets.length} items (${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''})`
+    const epoch = rootEpoch.current
     if (!(await askConfirm(`Move ${label} to trash?`))) return
+    if (onFlush && !(await onFlush())) return
+    if (rootEpoch.current !== epoch) return
     void run(async () => {
       const results: { trashed: string; original: string }[] = []
-      for (const path of targets) {
-        const result = await api.trash(path)
-        results.push({ trashed: result.path, original: path })
+      try {
+        for (const path of targets) {
+          const result = await api.trash(path)
+          results.push({ trashed: result.path, original: path })
+        }
+      } catch (error) {
+        const failed: string[] = []
+        for (const entry of [...results].reverse()) {
+          try {
+            await api.restore(entry.trashed, entry.original)
+          } catch {
+            failed.push(entry.original)
+          }
+        }
+        onChanged()
+        const message = error instanceof Error ? error.message : String(error)
+        if (failed.length) {
+          throw new Error(`${message}; could not restore: ${failed.join(', ')}`)
+        }
+        throw error
       }
       undoStack.current.push({
         label: `trash ${label}`,
@@ -376,9 +493,95 @@ export function FileTree({
       setMarked(new Set())
       setCursorPath(dirname(targets[0]) || null)
       const hit = targets.find((path) => path === selected || (selected ?? '').startsWith(`${path}/`))
-      if (hit) onOpenDir(dirname(hit))
+      if (hit) {
+        onOpenDir(dirname(hit))
+      } else {
+        const open = targets.find(
+          (path) => currentDir === path || currentDir.startsWith(`${path}/`),
+        )
+        if (open) onPathRemoved(open)
+      }
     }, `trashed ${label}`)
   }
+
+  const trash = async (path?: string) => trashTargets(actionTargets(path))
+
+  const moveTargets = async (targets: string[]) => {
+    if (!targets.length) return
+
+    const blocked = (path: string) =>
+      targets.some((target) => path === target || path.startsWith(`${target}/`))
+    const choices = folderChoices.filter((folder) => !blocked(folder.path))
+    const destination = await askFolder(
+      targets.length === 1 ? `Move "${targets[0]}" to…` : `Move ${targets.length} items to…`,
+      choices,
+      dirname(targets[0]),
+    )
+    if (destination === null) return
+
+    const moves = targets
+      .map((from) => ({ from, to: joinPath(destination, baseName(from)) }))
+      .filter((item) => item.to !== item.from)
+    if (!moves.length) {
+      setStatus('already in that folder')
+      return
+    }
+    const duplicate = moves.find(
+      (item, index) => moves.findIndex((other) => other.to === item.to) !== index,
+    )
+    if (duplicate) {
+      onError(`two items would use the same name: ${baseName(duplicate.from)}`)
+      return
+    }
+    const clash = moves.find((item) => treePaths.has(item.to))
+    if (clash) {
+      onError(`target already exists: ${clash.to}`)
+      return
+    }
+    if (onFlush && !(await onFlush())) return
+
+    void run(async () => {
+      const done: { from: string; to: string }[] = []
+      try {
+        for (const item of moves) {
+          await api.transfer(item.from, item.to, false)
+          done.push(item)
+          onRemapPath(item.from, item.to)
+        }
+      } catch (error) {
+        for (const item of [...done].reverse()) {
+          try {
+            await api.transfer(item.to, item.from, false)
+            onRemapPath(item.to, item.from)
+          } catch {}
+        }
+        onChanged()
+        throw error
+      }
+
+      undoStack.current.push({
+        label: `move ${moves.map((item) => baseName(item.from)).join(', ')}`,
+        run: async () => {
+          for (const item of [...moves].reverse()) {
+            await api.transfer(item.to, item.from, false)
+            onRemapPath(item.to, item.from)
+          }
+        },
+      })
+      setMarked(new Set())
+      setCursorPath(moves[0].to)
+      if (destination) {
+        for (const path of [...ancestors(destination), destination]) {
+          if (!expanded.has(path)) onToggle(path)
+        }
+      }
+
+    }, `moved ${moves.length === 1 ? baseName(moves[0].from) : `${moves.length} items`} to ${
+      destination || 'root'
+    }`)
+  }
+
+  const move = async (path?: string) => moveTargets(actionTargets(path))
 
   const cut = () => {
     if (!activeRow) return
@@ -386,29 +589,39 @@ export function FileTree({
     setStatus(`cut ${activeRow.node.path}`)
   }
 
-  const copy = () => {
-    if (!activeRow) return
-    setClipboard({ path: activeRow.node.path, mode: 'copy' })
-    setStatus(`copied ${activeRow.node.path}`)
+  const copy = (path = activeRow?.node.path) => {
+    if (!path) return
+    setClipboard({ path, mode: 'copy' })
+    setStatus(`copied ${path}`)
   }
 
-  const paste = () => {
+  const paste = async (
+    path = activeRow?.node.path ?? null,
+    type = activeRow?.node.type ?? null,
+  ) => {
     if (!clipboard) return
-    const dir = targetDir()
+    const dir = targetDir(path, type)
     const name = baseName(clipboard.path)
     const to = joinPath(dir, name)
-    if (to === clipboard.path) {
-      onError('source and destination are the same')
+    if (to === clipboard.path || to.startsWith(`${clipboard.path}/`)) {
+      onError('cannot paste an item into itself')
       return
     }
     const mode = clipboard.mode
+    if (onFlush && !(await onFlush())) return
     void run(async () => {
       await api.transfer(clipboard.path, to, mode === 'copy')
+      if (mode === 'cut') onRemapPath(clipboard.path, to)
       undoStack.current.push({
         label: `paste ${to}`,
         run: async () => {
-          if (mode === 'cut') await api.transfer(to, clipboard.path, false)
-          else await api.trash(to)
+          if (mode === 'cut') {
+            await api.transfer(to, clipboard.path, false)
+            onRemapPath(to, clipboard.path)
+          } else {
+            await api.trash(to)
+            onPathRemoved(to)
+          }
         },
       })
       if (mode === 'cut') setClipboard(null)
@@ -416,28 +629,76 @@ export function FileTree({
     }, `pasted into ${dir || 'root'}`)
   }
 
-  const undo = () => {
-    const entry = undoStack.current.pop()
+  const copyPath = async (path: string) => {
+    const absolute = api.absolutePath(path)
+    try {
+      await navigator.clipboard.writeText(absolute)
+      setStatus(`copied path ${absolute}`)
+    } catch {
+      onError('Could not copy path')
+    }
+  }
+
+  const openRowContextMenu = (row: Row, event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    scrollRef.current?.focus()
+    setCursorPath(row.node.path)
+    anchorRef.current = row.node.path
+    if (!marked.has(row.node.path)) setMarked(new Set())
+    const targets = marked.has(row.node.path) ? collapseTargets([...marked]) : [row.node.path]
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      path: row.node.path,
+      type: row.node.type,
+      targets,
+      focus: () => scrollRef.current?.focus(),
+    })
+  }
+
+  const runMenuAction = (item: ContextMenuItem) => {
+    const focus = contextMenu?.focus
+    setContextMenu(null)
+    focus?.()
+    item.action()
+  }
+
+  const dismissContextMenu = (reason: 'outside' | 'escape' | 'resize' | 'blur') => {
+    const menuFocused = Boolean(document.activeElement?.closest('.context-menu'))
+    if (reason === 'escape' || menuFocused || document.activeElement === document.body) {
+      contextMenu?.focus()
+    }
+    setContextMenu(null)
+  }
+
+  const undo = async () => {
+    if (busyRef.current) return
+    const entry = undoStack.current[undoStack.current.length - 1]
     if (!entry) {
       setStatus('nothing to undo')
       return
     }
+    if (onFlush && !(await onFlush())) return
     void run(async () => {
       await entry.run()
+      if (undoStack.current[undoStack.current.length - 1] === entry) undoStack.current.pop()
     }, `undid ${entry.label}`)
   }
 
   const onKeyDown = (event: React.KeyboardEvent) => {
-    const mod = event.ctrlKey || event.metaKey
     const key = event.key
+    if ((event.target as HTMLElement).closest('.tree-twisty') && (key === 'Enter' || key === ' ')) {
+      return
+    }
 
-    if (key === 'ArrowDown' || (mod && key.toLowerCase() === 'n')) {
+    if (key === 'ArrowDown' || matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
       event.preventDefault()
       if (event.shiftKey) extendCursor(cursor + 1)
       else moveCursor(cursor + 1)
       return
     }
-    if (key === 'ArrowUp' || (mod && key.toLowerCase() === 'p')) {
+    if (key === 'ArrowUp' || matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
       event.preventDefault()
       if (event.shiftKey) extendCursor(cursor - 1)
       else moveCursor(cursor - 1)
@@ -446,9 +707,10 @@ export function FileTree({
     if (key === 'Escape' && marked.size) {
       event.preventDefault()
       setMarked(new Set())
+      anchorRef.current = cursorPath
       return
     }
-    if (mod && key.toLowerCase() === 'a') {
+    if (matchesBinding('mod+a', event) || matchesBinding('ctrl+a', event)) {
       event.preventDefault()
       setMarked(new Set(rows.map((row) => row.node.path)))
       return
@@ -468,11 +730,20 @@ export function FileTree({
     }
     if (key === 'ArrowLeft') {
       event.preventDefault()
-      if (event.ctrlKey || event.metaKey) {
+      if (matchesBinding('mod+left', event) || matchesBinding('ctrl+left', event)) {
         onCollapseAll()
         return
       }
-      if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) onToggle(activeRow.node.path)
+      if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) {
+        onToggle(activeRow.node.path)
+        return
+      }
+      if (activeRow) {
+        const parent = dirname(activeRow.node.path)
+        const index = rows.findIndex((row) => row.node.path === parent)
+        if (index >= 0) moveCursor(index)
+        else onOpenDir(parent)
+      }
       return
     }
     if (key === ' ' || key === 'Spacebar') {
@@ -511,7 +782,7 @@ export function FileTree({
       } else if (activeRow) {
         const parent = dirname(activeRow.node.path)
         const index = rows.findIndex((row) => row.node.path === parent)
-        if (index >= 0) setCursorPath(rows[index]?.node.path ?? null)
+        if (index >= 0) moveCursor(index)
         else onOpenDir(parent)
       }
       return
@@ -541,6 +812,11 @@ export function FileTree({
       void trash()
       return
     }
+    if (shortcut('tree.move')) {
+      event.preventDefault()
+      void move()
+      return
+    }
     if (shortcut('tree.cut')) {
       event.preventDefault()
       cut()
@@ -553,14 +829,68 @@ export function FileTree({
     }
     if (shortcut('tree.paste')) {
       event.preventDefault()
-      paste()
+      void paste()
       return
     }
     if (shortcut('tree.undo')) {
       event.preventDefault()
-      undo()
+      void undo()
     }
   }
+
+  const menuTarget = contextMenu
+  const menuItems: ContextMenuItem[] = menuTarget
+    ? menuTarget.background
+      ? [
+          {
+            key: 'newFile',
+            label: 'New file',
+            icon: 'note_add',
+            action: () => void newEntry(menuTarget.path),
+          },
+          {
+            key: 'paste',
+            label: 'Paste',
+            icon: 'content_paste',
+            disabled: !clipboard,
+            action: () => void paste(menuTarget.path, 'dir'),
+          },
+        ]
+      : [
+          {
+            key: 'newFile',
+            label: 'New file',
+            icon: 'note_add',
+            action: () => {
+              const dir = pasteDirectory(menuTarget.path, menuTarget.type, '')
+              void newEntry(dir)
+            },
+          },
+          { key: 'copy', label: 'Copy', icon: 'content_copy', action: () => copy(menuTarget.path) },
+          {
+            key: 'paste',
+            label: 'Paste',
+            icon: 'content_paste',
+            disabled: !clipboard,
+            action: () => void paste(menuTarget.path, menuTarget.type),
+          },
+          { key: 'rename', label: 'Rename', icon: 'edit', action: () => void rename(menuTarget.path) },
+          {
+            key: 'delete',
+            label: 'Move to trash',
+            icon: 'delete',
+            danger: true,
+            action: () => void trashTargets(menuTarget.targets),
+          },
+          { key: 'move', label: 'Move', icon: 'drive_file_move', action: () => void moveTargets(menuTarget.targets) },
+          {
+            key: 'copyPath',
+            label: 'Copy path',
+            icon: 'link',
+            action: () => void copyPath(menuTarget.path),
+          },
+        ]
+    : []
 
   return (
     <div className="tree">
@@ -689,7 +1019,35 @@ export function FileTree({
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        onFocus={(event) => {
+          if (event.target !== event.currentTarget) return
+          if (cursorPath && rows.some((row) => row.node.path === cursorPath)) return
+          const next =
+            selected && rows.some((row) => row.node.path === selected)
+              ? selected
+              : (rows[0]?.node.path ?? null)
+          setCursorPath(next)
+          anchorRef.current = next
+        }}
+        onContextMenu={(event) => {
+          if ((event.target as HTMLElement).closest('.tree-row')) return
+          event.preventDefault()
+          scrollRef.current?.focus()
+          setMarked(new Set())
+          setContextMenu({
+            x: event.clientX,
+            y: event.clientY,
+            path: currentDir,
+            type: 'dir',
+            targets: [],
+            focus: () => scrollRef.current?.focus(),
+            background: true,
+          })
+        }}
+        onScroll={(event) => {
+          setScrollTop(event.currentTarget.scrollTop)
+          if (contextMenu) setContextMenu(null)
+        }}
       >
         {rows.length === 0 ? (
           <div className="tree-empty">No matches</div>
@@ -710,13 +1068,16 @@ export function FileTree({
               const isMarked = marked.has(row.node.path)
               const isCurrentDir = isDir && currentDir === row.node.path
               const isCut = clipboard?.mode === 'cut' && clipboard.path === row.node.path
+              const isContext = !contextMenu?.external && contextMenu?.path === row.node.path
 
               return (
                 <div
                   key={row.node.path}
                   className={`tree-row ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''} ${
                     isMarked ? 'marked' : ''
-                  } ${isCurrentDir ? 'current-dir' : ''} ${isCut ? 'cut' : ''}`}
+                  } ${isCurrentDir ? 'current-dir' : ''} ${isCut ? 'cut' : ''} ${
+                    isContext ? 'context' : ''
+                  }`}
                   style={{
                     position: 'absolute',
                     top: index * ROW,
@@ -726,14 +1087,17 @@ export function FileTree({
                     paddingLeft: 8 + row.depth * 13,
                   }}
                   onClick={(event) => handleRowClick(row, event)}
+                  onContextMenu={(event) => openRowContextMenu(row, event)}
                   title={row.node.path}
                 >
                   {isDir ? (
                     <button
                       type="button"
                       className="tree-twisty"
+                      tabIndex={-1}
                       onClick={(event) => {
                         event.stopPropagation()
+                        scrollRef.current?.focus()
                         onToggle(row.node.path)
                       }}
                       title={isOpen ? 'Collapse' : 'Expand'}
@@ -763,6 +1127,16 @@ export function FileTree({
         )}
         <span className="tree-status">{status}</span>
       </div>
+
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={menuItems}
+          onSelect={runMenuAction}
+          onDismiss={dismissContextMenu}
+        />
+      )}
     </div>
   )
-}
+})

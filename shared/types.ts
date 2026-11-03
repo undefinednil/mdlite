@@ -62,6 +62,7 @@ export interface VimrcSettings {
 export interface AppSettings {
   vimEnabled: boolean
   wordWrap: boolean
+  mainWidth: number
   vimrc: VimrcSettings
   shortcuts: Record<string, string>
 }
@@ -75,4 +76,14 @@ export interface VimrcResponse {
   path: string
   exists: boolean
   content: string
+}
+
+export interface TrashEntry {
+  path: string
+  name: string
+  original: string
+  originalKnown: boolean
+  deletedAt: number
+  kind: NodeType
+  size: number
 }

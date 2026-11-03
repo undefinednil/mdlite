@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::{ApiError, ApiResult};
@@ -26,6 +27,25 @@ pub fn lexical(path: &Path) -> PathBuf {
     out
 }
 
+fn canonical_deepest(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(real) = current.canonicalize() {
+            let mut out = real;
+            for part in suffix.iter().rev() {
+                out.push(part);
+            }
+            return Some(out);
+        }
+        let name = current.file_name()?.to_os_string();
+        suffix.push(name);
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 pub fn safe_join(root: &Path, rel: &str) -> ApiResult<PathBuf> {
     let clean = rel.trim_start_matches('/');
     let root_norm = lexical(root);
@@ -35,9 +55,20 @@ pub fn safe_join(root: &Path, rel: &str) -> ApiResult<PathBuf> {
         return Err(ApiError::bad_request("path escapes root"));
     }
 
-    if let (Ok(real), Ok(real_root)) = (candidate.canonicalize(), root_norm.canonicalize()) {
+    if let (Some(real), Ok(real_root)) = (canonical_deepest(&candidate), root_norm.canonicalize()) {
         if real != real_root && !real.starts_with(&real_root) {
             return Err(ApiError::bad_request("path escapes root"));
+        }
+    }
+
+    let relative = candidate.strip_prefix(&root_norm).unwrap_or(Path::new(""));
+    let mut probe = root_norm.clone();
+    for component in relative.components() {
+        probe.push(component);
+        if let Ok(metadata) = fs::symlink_metadata(&probe) {
+            if metadata.file_type().is_symlink() && probe.canonicalize().is_err() {
+                return Err(ApiError::bad_request("path escapes root"));
+            }
         }
     }
 
@@ -100,6 +131,28 @@ mod tests {
         let joined = safe_join(root, "docs/a.md").unwrap();
         assert_eq!(joined, PathBuf::from("/tmp/vault/docs/a.md"));
         assert_eq!(safe_join(root, "").unwrap(), PathBuf::from("/tmp/vault"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_paths_through_symlinks_that_leave_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!("mdlite-paths-{}", uuid::Uuid::new_v4()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        assert!(safe_join(&root, "link/secret.txt").is_err());
+        assert!(safe_join(&root, "link/new.md").is_err());
+
+        symlink(base.join("missing"), root.join("broken")).unwrap();
+        assert!(safe_join(&root, "broken/new.md").is_err());
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

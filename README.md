@@ -4,11 +4,7 @@ A desktop app for browsing, searching and editing a folder of Markdown notes. Bu
 
 ## Docs
 
-- [Features](docs/features.md): what the app does and where its limits are
-- [Tech stack](docs/tech-stack.md): libraries, tools and versions
-- [Architecture](docs/architecture.md): the React and Rust split, commands, storage, security
-- [Development](docs/development.md): setup, checks, release builds, icons, self-test
-- [Troubleshooting](docs/troubleshooting.md): common failures and known limitations
+The [documentation index](docs/README.md) is the canonical list. It gives the reading order and says which page owns each topic. Start with [Features](docs/features.md) to use the app, [Architecture](docs/architecture.md) to see how it works, and [Development](docs/development.md) to build it.
 
 ## Run
 
@@ -27,21 +23,9 @@ npm run bundle   # .app on macOS, NSIS installer on Windows
 
 The macOS bundle lands in `src-tauri/target/release/bundle/macos/mdlite.app` (~23 MB). Open it with `open src-tauri/target/release/bundle/macos/mdlite.app`, or drag it to `/Applications`.
 
-Other targets: `bundle:win`, `bundle:win:msi`, `bundle:dmg`.
+Other targets: `bundle:win`, `bundle:win:msi`, `bundle:dmg`. `bundle:dmg` needs a signed-in desktop session because it drives Finder through AppleScript.
 
-`bundle:dmg` needs a signed-in desktop session because it drives Finder through AppleScript.
-
-### Building for Windows
-
-Windows builds must run on Windows; Tauri does not cross-compile.
-
-1. Install the [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload. This provides the linker and resource compiler Rust needs; you do not write any C or C++.
-2. Install Rust from [rustup.rs](https://rustup.rs) and Node `^20.19.0` or `>=22.12.0`.
-3. Run `npm ci` then `npm run bundle`.
-
-The installer lands in `src-tauri/target/release/bundle/nsis/mdlite_0.1.0_x64-setup.exe`. WebView2 is preinstalled on Windows 10 and 11.
-
-`.github/workflows/desktop.yml` runs the same build on `windows-latest` and `macos-latest` and uploads both bundles, so a tag produces a Windows installer without a Windows machine.
+Windows builds must run on Windows; Tauri does not cross-compile. The NSIS installer lands in `src-tauri/target/release/bundle/nsis/`, and CI builds both bundles on a tag. See [Development](docs/development.md) for the Windows prerequisites and bundle commands.
 
 ## How it is put together
 
@@ -55,22 +39,26 @@ src-tauri/            Rust backend
   src/search.rs       ripgrep wrapper plus a pure-Rust fallback
   src/watch.rs        recursive watcher, debounced, emits fs-change
   src/settings.rs     editor settings and shortcut overrides
-  src/state.rs        roots and settings persisted to the OS config folder
-  src/lib.rs          19 Tauri commands
+  src/state.rs        roots and settings persisted to the config file
+  src/lib.rs          21 Tauri commands
 src/                  React app
   api.ts              the only seam: invoke() calls into Rust
   components/         FileTree, FolderView, MarkdownView, MediaView,
-                      ExcalidrawView, Editor, Palette, SettingsView, DialogHost
-  lib/                markdown pipeline, path helpers, shortcuts, settings, vimrc parser
+                      ExcalidrawView, Editor, Palette, SettingsView, TrashView,
+                      DialogHost, ContextMenu
+  lib/                markdown pipeline, path helpers, shortcuts, keyboard,
+                      editor keys, settings, vimrc parser
 ```
 
-Images and video are served through Tauri's `asset://` protocol, because a webview cannot load `file://`.
+Images and video are served through the Tauri asset protocol, because a webview cannot load `file://`.
+
+## Behaviour
+
+One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. See [Features](docs/features.md) for each area and its limits.
 
 ## Settings
 
-Open the gear button in the sidebar to manage roots, editor settings and shortcuts. **Browse…** opens a native folder picker. Add as many roots as you like, switch between them, and remove entries. The active root determines what the tree, search, editor and file operations act on.
-
-Everything is stored in `~/.config/mdlite/mdlite.json` (`%USERPROFILE%\.config\mdlite\mdlite.json` on Windows). An existing `~/.mdlite.json` is imported once and left in place. `MDLITE_CONFIG` moves the file; `MDLITE_ROOT` seeds the first root.
+The gear button opens Settings for root folders, editor options and shortcuts. [Features](docs/features.md#settings) covers each option and its default.
 
 ## Keyboard
 
@@ -86,33 +74,23 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 | `Space` | Tree: expand or collapse the highlighted folder |
 | `⌃←` | Tree: collapse every folder |
 | `a` `r` `d` | Tree: new file (end with `/` for a folder), rename, move to trash (all selected rows when several are selected) |
+| `m` | Tree: move the row, or every marked row, to a folder picked from a list |
 | `Shift`-click / `⌘`-click | Tree: select a range / toggle one row |
-| `⌘A` / `Ctrl+A` / `Esc` | Tree: select all visible rows / clear the selection |
+| `⌘A` / `⌃A` / `Esc` | Tree: select all visible rows / clear the selection |
 | `x` `y` `p` `u` | Tree: cut, copy, paste, undo the last file operation |
-| `j` / `k` | Scroll the page in view mode; move the cursor in the folder table |
+| `j` / `k` | Scroll smoothly in view mode; move the cursor in the folder table |
+| `gg` / `G` | View mode: glide to the top / bottom of the note |
 | `⌃H` / `⌃L` | Focus the file tree / the main area |
 | `⌃⇧V` | Toggle edit / view (also `⌃⇧E`) |
 | `⌃S` | Save |
-| `⌃D` / `⌃U` | Jump to the bottom / top of the screen and centre |
-| `⌃F` / `⌃B` | Page down / up |
-| `Esc` | Close a dialog or the finder |
+| `⌃D` / `⌃U` | Editor: jump to the bottom / top of the screen and centre |
+| `⌃F` / `⌃B` | Editor: page down / up |
+| `Enter` | Open the highlighted row, confirm a dialog, or activate the focused button |
+| `Esc` | Cancel a dialog, close the finder, or close Settings |
 
-## Behaviour
+`⌘` means Command on macOS and Ctrl on Windows or Linux. `⌃` means Control on every platform. The default app shortcuts use Control; tree navigation also accepts Command on macOS. Change any binding in Settings → Shortcuts.
 
-- **Folder browsing:** the main area is a table of the current folder with Name, Kind, Size and Modified columns, sortable by clicking a header. Breadcrumbs sit above it. Clicking a folder in the table or the tree enters it; `j`/`k` move the cursor and `Enter` opens.
-- **Sidebar tree:** shift-click selects a range, `⌘`-click or `Ctrl`-click toggles one row, and `d` moves every selected row to the trash in one step. Plain click clears the selection. Lists the whole vault, loads once and filters client-side. Filtering keeps the tree shape: matching files stay under their folders, and folders with matches open automatically. Sort by name or modified. Filters: path text in `contains` / `glob` / `regex` mode, kind chips (md, code, data, image, draw, other), a modified-date range, and file size buckets.
-- **File types:** Markdown renders with Mermaid and Shiki. Code and text files open straight into the editor with syntax highlighting. Files without an extension are opened as text when their content is valid UTF-8; binary files show the card instead. Images open in place. Excalidraw drawings open in the full editor (loaded on demand). SVG has view and edit modes. Anything else offers to open it in the default app.
-- **Temporary files:** drag a file from the desktop onto the window to open it without touching the vault. The header shows a `temporary` badge; `⌃S` exports it instead of writing to disk.
-- **Media:** in the editor, paste or drop an image or video, or use the attach button in the header. Files are saved to an `images/` folder next to the note and inserted as Markdown. Videos render with controls.
-- **Resize in the preview:** drag the corner handle on an image to set its width (saved into the Markdown as `{width=N}`); drag a column edge in a table to size columns (remembered per file).
-- **Copy:** the header copy button copies styled rich text in view mode and the raw Markdown in edit mode.
-- **Editing:** CodeMirror with Vim keybindings. Vim and word wrap can be toggled in Settings → Editor.
-- **Vim:** editor keybindings can be turned off in Settings → Editor. The vimrc source is either `~/.vimrc`, a custom path or text pasted into Settings. Mappings (`map`, `noremap`, `nmap`, `nnoremap`, `vmap`, `vnoremap`, `xmap`, `xnoremap`, `omap`, `onoremap`, `imap`, `inoremap`, including `<leader>` and `<silent>`) and `set` options for tab size, indentation, line numbers and cursor line are applied. `:w`, `:update` and `<C-s>` save. The `vim` badge tooltip lists what was applied.
-- **View and edit share a scroll position:** switching modes keeps your place, measured as a fraction of the document height.
-- **Auto-save:** leaving the editor saves unsaved changes automatically, with the same modification-time conflict check as an explicit save.
-- **Conflicts:** if a file changes on disk while you are editing, the app offers reload or overwrite.
-- **Live updates:** the watcher pushes changes, so edits made elsewhere appear without a refresh.
-- Hidden folders, `.git`, `node_modules`, `.obsidian` and `dist` are ignored.
+Some keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q` or `W`. `⌃D`/`⌃U` and `⌃F`/`⌃B` work in the editor. With Vim on, Vim handles them. With Vim off on Windows or Linux, `⌃F` stays with CodeMirror search.
 
 ## Icons
 
@@ -120,4 +98,4 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 
 ## Notes
 
-The bundle is unsigned. It runs locally without a prompt because nothing marks it as downloaded; copying it to another Mac will require right-click → Open, or a Developer ID signature plus notarization.
+The macOS bundle is ad-hoc signed, so a copy taken from the internet opens with right-click → Open once. A Developer ID signature plus notarization is needed for a plain double-click on someone else's Mac.

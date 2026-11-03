@@ -8,6 +8,7 @@ import type {
   RootEntry,
   SaveResult,
   SettingsResponse,
+  TrashEntry,
   TreeNode,
   VimrcResponse,
 } from '../shared/types'
@@ -87,10 +88,18 @@ export const api = {
 
   read: (path: string) => call<FileDoc>('read_file', { path }),
 
-  save: (path: string, content: string, mtime: number, force = false) =>
-    call<SaveResult>('write_file', { path, content, mtime, force }),
+  save: (
+    path: string,
+    content: string,
+    mtime: number,
+    size: number,
+    hash: string,
+    force = false,
+  ) => call<SaveResult>('write_file', { path, content, mtime, size, hash, force }),
 
   saveText: (path: string, content: string) => call<void>('save_text_file', { path, content }),
+
+  absolutePath: (path: string) => absolutePath(path),
 
   open: (path: string) => call<void>('open_path', { path: absolutePath(path) }),
 
@@ -119,6 +128,10 @@ export const api = {
     call<string>('transfer_entry', { from, to, copy }).then((next) => ({ path: next })),
 
   trash: (path: string) => call<string>('trash_entry', { path }).then((next) => ({ path: next })),
+
+  trashList: () => call<TrashEntry[]>('trash_list'),
+
+  purgeTrash: (path: string) => call<void>('trash_purge', { path }),
 
   restore: (from: string, to: string) =>
     call<string>('restore_entry', { from, to }).then((next) => ({ path: next })),

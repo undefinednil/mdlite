@@ -1,3 +1,4 @@
+import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 import type { Highlighter } from 'shiki'
 import { resolveRelative } from './paths'
@@ -33,7 +34,7 @@ async function getMermaid() {
     mermaid.initialize({
       startOnLoad: false,
       theme: 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
       fontFamily: 'inherit',
       themeVariables: { background: '#ffffff' },
     })
@@ -44,13 +45,18 @@ async function getMermaid() {
 
 const WIDTH_PATTERN = /!\[([^\]]*)\]\(([^)\s]+)\)\{width=(\d+)\}/g
 
+const SANITIZE_OPTIONS = {
+  ADD_TAGS: ['video', 'audio', 'source', 'input'],
+  ADD_ATTR: ['controls', 'width', 'height', 'checked', 'disabled', 'type', 'target', 'rel'],
+}
+
 export function renderMarkdown(source: string): string {
   const expanded = source.replace(
     WIDTH_PATTERN,
     (_match, alt: string, src: string, width: string) =>
       `<img src="${src}" alt="${alt.replace(/"/g, '&quot;')}" width="${width}" />`,
   )
-  return md.render(expanded)
+  return DOMPurify.sanitize(md.render(expanded), SANITIZE_OPTIONS)
 }
 
 interface EnhanceOptions {
@@ -232,7 +238,22 @@ function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (
     const handle = document.createElement('span')
     handle.className = 'img-handle'
     handle.title = 'Drag to resize'
+    handle.tabIndex = 0
+    handle.setAttribute('role', 'slider')
+    handle.setAttribute('aria-label', 'Resize image')
     wrapper.appendChild(handle)
+
+    handle.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      event.preventDefault()
+      event.stopPropagation()
+      const current = Math.round(img.getBoundingClientRect().width)
+      const step = event.key === 'ArrowRight' ? 10 : -10
+      const width = Math.max(60, current + step * (event.shiftKey ? 5 : 1))
+      img.style.width = `${width}px`
+      img.style.maxWidth = 'none'
+      onSourceChange(withImageWidth(source, original, width))
+    })
 
     handle.addEventListener('mousedown', (event) => {
       event.preventDefault()
@@ -290,7 +311,22 @@ function attachTableResize(root: HTMLElement, filePath: string) {
     cells.forEach((cell, columnIndex) => {
       const handle = document.createElement('span')
       handle.className = 'col-resize'
+      handle.tabIndex = 0
+      handle.setAttribute('role', 'separator')
+      handle.setAttribute('aria-label', 'Resize column')
       cell.appendChild(handle)
+
+      handle.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+        event.preventDefault()
+        event.stopPropagation()
+        const current = Math.round(cell.getBoundingClientRect().width)
+        const step = event.key === 'ArrowRight' ? 10 : -10
+        const width = Math.max(60, current + step * (event.shiftKey ? 5 : 1))
+        cols[columnIndex]!.style.width = `${width}px`
+        const widths = cols.map((col) => Math.round(parseFloat(col.style.width || '0')) || 0)
+        localStorage.setItem(`${storageKey}:${index}`, JSON.stringify(widths))
+      })
 
       handle.addEventListener('mousedown', (event) => {
         event.preventDefault()
