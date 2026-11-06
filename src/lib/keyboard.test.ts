@@ -34,7 +34,12 @@ const base: AppShortcutContext = {
   settingsOpen: false,
   cycleOpen: false,
   save: false,
+  findFile: false,
+  find: false,
+  closeFile: false,
   toggle: false,
+  focusTree: false,
+  focusMain: false,
 }
 
 test('app shortcuts run for plain modifier key presses', () => {
@@ -76,6 +81,90 @@ test('the editor keeps navigation keys but allows save and toggle', () => {
       ...base,
       target: editor,
       toggle: true,
+    }),
+    true,
+  )
+})
+
+test('find file opens from the editor', () => {
+  assert.equal(
+    appShortcutAllowed(event({ key: 'e', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      findFile: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'e', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      findFile: false,
+    }),
+    false,
+  )
+})
+
+test('find in note opens from the editor', () => {
+  assert.equal(
+    appShortcutAllowed(event({ key: 'f', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      find: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'f', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      find: false,
+    }),
+    false,
+  )
+})
+
+test('close file opens from the editor and the canvas', () => {
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      closeFile: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      target: canvas,
+      closeFile: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      closeFile: false,
+    }),
+    false,
+  )
+})
+
+test('focus shortcuts escape the editor and canvas', () => {
+  assert.equal(
+    appShortcutAllowed(event({ key: 'h', ctrlKey: true }), {
+      ...base,
+      target: editor,
+      focusTree: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'l', ctrlKey: true }), {
+      ...base,
+      target: canvas,
+      focusMain: true,
     }),
     true,
   )

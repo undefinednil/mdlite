@@ -143,13 +143,8 @@ fn save_text_file(path: String, content: String) -> ApiResult<()> {
     Ok(())
 }
 
-#[tauri::command(async)]
-fn open_path(path: String) -> ApiResult<()> {
-    let target = PathBuf::from(path);
-    if !target.exists() {
-        return Err(ApiError::not_found("file not found"));
-    }
-    let mut command = if cfg!(target_os = "windows") {
+fn system_opener() -> std::process::Command {
+    if cfg!(target_os = "windows") {
         let mut command = std::process::Command::new("cmd");
         command.args(["/C", "start", ""]);
         command
@@ -157,8 +152,57 @@ fn open_path(path: String) -> ApiResult<()> {
         std::process::Command::new("open")
     } else {
         std::process::Command::new("xdg-open")
+    }
+}
+
+#[tauri::command(async)]
+fn open_path(path: String) -> ApiResult<()> {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+        return Err(ApiError::not_found("file not found"));
+    }
+    system_opener().arg(target).spawn().map_err(|error| ApiError::new("io", error.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn reveal_path(state: State<'_, AppState>, path: String) -> ApiResult<()> {
+    let target = paths::safe_join(&root_of(&state)?, &path)?;
+    if !target.exists() {
+        return Err(ApiError::not_found("file not found"));
+    }
+    let mut command = if cfg!(target_os = "windows") {
+        let mut command = std::process::Command::new("explorer");
+        command.arg(format!("/select,{}", target.display()));
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(&target);
+        command
+    } else {
+        let folder = target.parent().map(|parent| parent.to_path_buf()).unwrap_or(target);
+        let mut command = system_opener();
+        command.arg(folder);
+        command
     };
-    command.arg(target).spawn().map_err(|error| ApiError::new("io", error.to_string()))?;
+    command.spawn().map_err(|error| ApiError::new("io", error.to_string()))?;
+    Ok(())
+}
+
+fn external_url(url: &str) -> ApiResult<&str> {
+    let trimmed = url.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let allowed = lower.starts_with("http://") || lower.starts_with("https://");
+    if !allowed || trimmed.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return Err(ApiError::bad_request("only http and https links can be opened"));
+    }
+    Ok(trimmed)
+}
+
+#[tauri::command(async)]
+fn open_url(url: String) -> ApiResult<()> {
+    let target = external_url(&url)?;
+    system_opener().arg(target).spawn().map_err(|error| ApiError::new("io", error.to_string()))?;
     Ok(())
 }
 
@@ -255,6 +299,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             info,
@@ -266,6 +311,8 @@ pub fn run() {
             write_file,
             save_text_file,
             open_path,
+            reveal_path,
+            open_url,
             search_grep,
             upload,
             create_entry,
@@ -291,4 +338,19 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running mdlite");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opens_only_http_and_https_links() {
+        assert_eq!(external_url(" https://example.com/a ").unwrap(), "https://example.com/a");
+        assert!(external_url("HTTP://example.com").is_ok());
+        assert!(external_url("javascript:alert(1)").is_err());
+        assert!(external_url("file:///etc/passwd").is_err());
+        assert!(external_url("mailto:note@example.com").is_err());
+        assert!(external_url("https://example.com/a b").is_err());
+    }
 }

@@ -15,8 +15,11 @@ mdlite is a Tauri 2 desktop app for browsing, searching and editing a folder of 
 
 `src/api.ts` is the only Tauri IPC boundary.
 
-- Every disk operation goes through a Rust command and a wrapper in `src/api.ts`. Components must never call `invoke` directly.
-- To add an operation: write the command in Rust, register it in `generate_handler!` in `src-tauri/src/lib.rs`, add one wrapper in `src/api.ts`, call the wrapper from the UI.
+- Every disk operation goes through a Rust command and a named function on the `Api` interface in `src/api.ts`. Components must never call `invoke` directly.
+- Command strings and raw `invoke`/`listen` calls stay inside `createDesktopApi`, which takes an injectable client. `api` is the production instance; `src/lib/fakeApi.ts` implements the same `Api` interface for tests.
+- To add an operation: write the command in Rust, register it in `generate_handler!` in `src-tauri/src/lib.rs`, add one function to `Api` and the desktop adapter in `src/api.ts`, add it to the fake adapter, call the function from the UI.
+- One `ApiError` shape crosses the seam. `kind` is a known value or the `unknown` escape hatch; the UI branches on `kind`, never on `message`.
+- Paths cross the seam as `RelPath` (root-relative) or `AbsPath` (absolute). `src/lib/paths.ts` is the only module that creates either; do not cast a plain string to one anywhere else.
 - `convertFileSrc` is wrapped as `api.rawUrl`. Do not build asset URLs anywhere else.
 - The `fs-change` subscription is `api.subscribeChanges`. Do not call `listen` directly.
 - The window API (`getCurrentWindow`) and the dialog plugin (`open`, `save`) are used directly where they act on the window or a native picker: title, close, choosing a folder, exporting a temporary file.
@@ -28,7 +31,7 @@ Read `docs/mdlite-frontend-styling/SKILL.md` before any UI change. It is the sty
 
 - Function components only. No class components.
 - No global state library. `App.tsx` owns session state (tree, selection, document, draft, mode, settings) and passes props down. A new leaf component takes props and callbacks, not a store.
-- All CSS goes in `src/styles.css`. No CSS framework, no CSS-in-JS, no second global stylesheet. The CodeMirror theme object in `src/components/Editor.tsx` is the only style defined in TSX.
+- All CSS goes in `src/styles.css`. No CSS framework, no CSS-in-JS, no second global stylesheet. The CodeMirror theme in `src/lib/editorTheme.ts` is the only style defined in TypeScript.
 - Use the `:root` tokens for surfaces, borders and text. Do not add a hex color when a token fits. Light theme only; do not add dark-mode branches.
 - Inline `style` is for dynamic values only: row offsets, indentation, generated widths. Static styling belongs in the stylesheet. `--main-width` is the exception that sets the main content width from the `mainWidth` setting.
 - A new setting updates `shared/types.ts`, `src/lib/settings.ts`, the Rust `AppSettings` default and validation, and the Settings UI in the same change.
@@ -65,20 +68,30 @@ Read `docs/mdlite-frontend-styling/SKILL.md` before any UI change. It is the sty
 
 ## Tests and verification
 
-Run these after a change:
+Run this after a change:
 
 ```bash
-npm run typecheck
-npm run build
-npm test
+npm run check
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-- `npm run build` does not typecheck. Run `npm run typecheck` as well.
-- `npm test` runs a fixed file list from `package.json`. A new `src/lib/*.test.ts` only runs if you add it to the `test` script.
+`npm run check` runs `npm run typecheck`, `npm test` and `npm run build` in that order. `npm run build` does not typecheck, so run the whole script instead of one part.
+
+- `npm test` runs every file matching the `src/**/*.test.ts` glob in the `test` script. A new test file runs without editing the script.
 - Rust tests are `#[cfg(test)] mod tests` inside the module they cover and use a fresh temp directory per test. Add one for a new path rule, file operation or config rule.
-- Run the packaged self-test after changing Tauri commands, the asset protocol, the dialogs or the first screen. Build with `VITE_MDLITE_SELFTEST=1 npx tauri build --bundles app`, run it with `MDLITE_CONFIG` and `MDLITE_ROOT` pointing at a throwaway folder, check `temp/__selftest.json`, then quit and delete the folder. Never point it at a real vault.
+- Run the packaged self-test after changing Tauri commands, the asset protocol, the dialogs or the first screen. Build with `VITE_MDLITE_SELFTEST=1 npx tauri build --bundles app`, run it with `MDLITE_CONFIG` and `MDLITE_ROOT` pointing at a throwaway folder, check `temp/__selftest.json`, then quit and delete the folder. Never point it at a real vault. `npm run e2e` automates that loop and fails when a keyboard-shortcut check fails.
 - CI (`.github/workflows/desktop.yml`) runs typecheck, `npm test` and `cargo test` on macOS and Windows on a `v*` tag or manual dispatch, then builds the bundles. There is no lint step; typecheck and tests are the gate.
+
+## Regression rules
+
+Each of these covers a bug this app has already had. Check them before reporting a change.
+
+- Put a decision in a pure function under `src/lib/` and test it. Views, effects and event handlers should only apply the result.
+- Never derive a size from an element that the same value sizes. Page caps are read from CSS in `src/lib/pageWidth.ts`; do not replace that with `offsetWidth`, `clientWidth` or `getBoundingClientRect`.
+- Read row leading slots with `rowLeading`. Only folder rows carry a twisty slot, so `leading[1]` is not the icon on a file row.
+- When an effect writes state, check that the value cannot flow back into the same effect through a measured DOM size. CSS constants are safe; live sizes are not.
+- Check handler wiring explicitly: capture versus bubble order, `preventDefault`/`stopPropagation`, and stale closures in `useCallback` and `useEffect` dependencies.
+- A UI behaviour change ships with a test for its decision function in the same change.
 
 ## Docs
 
@@ -109,4 +122,4 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - If Markdown changed, does it still pass through DOMPurify, and is Mermaid still strict?
 - Is a dirty file still handled through `confirmSave` before the view changes?
 - If a cap or debounce changed, is that the point of the change?
-- Is a new test file listed in the `npm test` script?
+- Does a new test file match `src/**/*.test.ts`, so `npm test` discovers it?

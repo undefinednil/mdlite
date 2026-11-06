@@ -1,8 +1,14 @@
+declare const relativePathBrand: unique symbol
+declare const absolutePathBrand: unique symbol
+
+export type RelPath = string & { readonly [relativePathBrand]: 'relative' }
+export type AbsPath = string & { readonly [absolutePathBrand]: 'absolute' }
+
 type NodeType = 'dir' | 'file'
 
 export interface TreeNode {
   name: string
-  path: string
+  path: RelPath
   type: NodeType
   size: number
   mtime: number
@@ -10,14 +16,14 @@ export interface TreeNode {
 }
 
 export interface FileDoc {
-  path: string
+  path: RelPath
   content: string
   mtime: number
   size: number
 }
 
 export interface SaveResult {
-  path: string
+  path: RelPath
   mtime: number
   size: number
 }
@@ -28,7 +34,7 @@ interface GrepMatch {
 }
 
 export interface GrepFile {
-  path: string
+  path: RelPath
   matches: GrepMatch[]
 }
 
@@ -41,11 +47,11 @@ export interface GrepResponse {
 export interface RootEntry {
   id: string
   name: string
-  path: string
+  path: AbsPath
 }
 
 export interface InfoResponse {
-  root: string
+  root: AbsPath
   name: string
   id: string
   roots: RootEntry[]
@@ -69,7 +75,7 @@ export interface AppSettings {
 
 export interface SettingsResponse {
   settings: AppSettings
-  path: string
+  path: AbsPath
 }
 
 export interface VimrcResponse {
@@ -79,9 +85,9 @@ export interface VimrcResponse {
 }
 
 export interface TrashEntry {
-  path: string
+  path: RelPath
   name: string
-  original: string
+  original: RelPath
   originalKnown: boolean
   deletedAt: number
   kind: NodeType

@@ -1,5 +1,5 @@
 import type { Extension } from '@codemirror/state'
-import { languageFor } from './paths'
+import { fileType } from './fileType'
 
 const cache = new Map<string, Promise<Extension>>()
 
@@ -45,8 +45,6 @@ function build(lang: string): Promise<Extension> | null {
       return legacy(() => import('@codemirror/legacy-modes/mode/go'), 'go')
     case 'bash':
       return legacy(() => import('@codemirror/legacy-modes/mode/shell'), 'shell')
-    case 'dockerfile':
-      return legacy(() => import('@codemirror/legacy-modes/mode/dockerfile'), 'dockerFile')
     case 'diff':
       return legacy(() => import('@codemirror/legacy-modes/mode/diff'), 'diff')
     case 'toml':
@@ -71,7 +69,7 @@ function build(lang: string): Promise<Extension> | null {
 }
 
 export function loadLanguageExtension(path: string): Promise<Extension> {
-  const lang = languageFor(path)
+  const lang = fileType(path).language
   const existing = cache.get(lang)
   if (existing) return existing
 

@@ -49,7 +49,7 @@ The installer lands in `src-tauri/target/release/bundle/nsis/mdlite_0.1.0_x64-se
 | `npm run dev` | Tauri development window with hot reload |
 | `npm run build` | Production build of the front end into `dist/` (no type check) |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | Runs the TypeScript test files listed in `package.json`: paths, scroll, shortcuts, vimrc, vim, keyboard and editorKeys |
+| `npm test` | Runs every file matching the `src/**/*.test.ts` glob from `package.json` |
 | `npm run icons` | Rebuild the app icon, platform icon set and sidebar logo |
 | `npm run bundle` | Release bundle for the current platform |
 | `npm run bundle:mac` | macOS `.app` |
@@ -61,28 +61,41 @@ The installer lands in `src-tauri/target/release/bundle/nsis/mdlite_0.1.0_x64-se
 
 ## Checks
 
-Run these before calling a change done:
+Run this before calling a change done:
 
 ```bash
-npm run typecheck
-npm run build
-npm test
+npm run check
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-`npm run build` does not typecheck. Run both.
+`npm run check` runs `npm run typecheck`, `npm test` and `npm run build` in that order. `npm run build` does not typecheck, so keep them together.
 
-`npm test` runs a fixed file list from `package.json`:
+`npm test` runs every file matching the `src/**/*.test.ts` glob from the `test` script, so a new test file runs without editing the script. `tsx` runs the TypeScript test files. The current files cover:
 
 - `paths.test.ts` covers path helpers and remapping.
 - `scroll.test.ts` covers smooth-scroller accumulation and clamping.
 - `shortcuts.test.ts` covers the shortcut catalogue, binding parser and matcher.
-- `vimrc.test.ts` covers vimrc parsing.
+- `vimrc.test.ts` and `vimMapping.test.ts` cover vimrc parsing and key routing, including leader mappings.
 - `vim.test.ts` covers Vim clipboard registers.
 - `keyboard.test.ts` covers the app-level shortcut guard.
 - `editorKeys.test.ts` covers editor key handling with `jsdom`.
-
-A new `src/lib/*.test.ts` does not run until you add it to the `test` script. `tsx` runs the TypeScript test files.
+- `editorTheme.test.ts` covers the focused-editor outline with `jsdom`.
+- `findInView.test.ts` covers reading-view find marking, clearing and the active match.
+- `mainZoom.test.ts` covers the main-area zoom steps, wheel and centred page layout.
+- `pageWidth.test.ts` covers reading the page cap from the stylesheet.
+- `pen.test.ts` covers pen availability, stroke history with undo and redo, the whole-stroke eraser and point mapping.
+- `platform.test.ts` covers the Reveal label per platform.
+- `markdown.test.ts` covers link rewriting, Mermaid zoom and the Markdown pipeline with `jsdom`.
+- `vimScroll.test.ts` covers the Vim half-page scroll when the target line is outside the rendered viewport.
+- `api.test.ts` covers command mapping, error normalization and the injected desktop client.
+- `fakeApi.test.ts` covers the fake adapter contract.
+- `fileOperations.test.ts` covers create, rename, move, trash, paste, undo, rollback and the root guard.
+- `fileType.test.ts` covers the extension table, editability, filter groups, icons and the drop predicate.
+- `format.test.ts` covers size, date, deleted-at and recent-time text.
+- `row.test.ts` covers row classes, leading slots, trailing text, activation and keyboard moves.
+- `selection.test.ts` covers cursor seeding, movement, extend, marks, remap and removal.
+- `session.test.ts` covers open, save, conflict, dirty, settle, scratch and disk reconciliation.
+- `tree.test.ts` covers node search, pruning, flattening, sorting and tree walks.
 
 Rust tests live in `#[cfg(test)] mod tests` inside the module they cover and use a fresh temp directory per test. They cover the path jail, tree walking, file conflicts, file operations, trash naming and listings, uploads, config repair and the search fallback. Add one for a new path rule, file operation or config rule.
 
@@ -99,7 +112,9 @@ This catches target-specific code errors but does not produce an installer. Buil
 
 ## Self-test
 
-The self-test runs inside a packaged build and writes a JSON report. It is useful after changing the Tauri commands, the asset protocol, the dialogs or the initial screen.
+The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle and Escape. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
+
+The manual steps remain useful when you want to inspect the full report:
 
 1. Build with the flag:
 
@@ -123,7 +138,7 @@ The self-test runs inside a packaged build and writes a JSON report. It is usefu
    ./src-tauri/target/release/bundle/macos/mdlite.app/Contents/MacOS/mdlite
    ```
 
-4. Read `/tmp/mdlite-selftest-vault/temp/__selftest.json`. `runSelfTest` calls `info`, `tree`, then `read` and `rawUrl` only when the tree has a file, `grep`, `assetImage`, `settings`, `vimrc`, `write`, `dialogs`, and a `ui` block with tree rows, folder rows and the brand text.
+4. Read `/tmp/mdlite-selftest-vault/temp/__selftest.json`. `runSelfTest` calls `info`, `tree`, then `read` and `rawUrl` only when the tree has a file, `grep`, `assetImage`, `settings`, `vimrc`, `write`, `dialogs`, and a `ui` block with tree rows, folder rows and the brand text. The `shortcuts` array records one `{ id, pass, detail }` entry for every shortcut check.
 
 5. Quit the app, delete the temporary vault and rebuild without the flag:
 

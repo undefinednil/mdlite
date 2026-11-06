@@ -54,7 +54,7 @@ Images and video are served through the Tauri asset protocol, because a webview 
 
 ## Behaviour
 
-One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. See [Features](docs/features.md) for each area and its limits.
+One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations, with the drawing staying put while the note scrolls. See [Features](docs/features.md) for each area and its limits.
 
 ## Settings
 
@@ -84,13 +84,18 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 | `⌃⇧V` | Toggle edit / view (also `⌃⇧E`) |
 | `⌃S` | Save |
 | `⌃D` / `⌃U` | Editor: jump to the bottom / top of the screen and centre |
-| `⌃F` / `⌃B` | Editor: page down / up |
+| `⌥↓` / `⌥↑` | Editor: page down / up |
+| `⌃F` | Find in the open note: the find bar in the reading view, the search panel in the editor |
+| `⌃W` | Close the open file and show its folder |
+| `⌃` + scroll | Zoom the main area in or out |
+| `⌃+` / `⌃-` / `⌃0` | Zoom the main area in, out, or back to 100% |
+| Middle-drag | Pan the main area; useful when zoomed in |
 | `Enter` | Open the highlighted row, confirm a dialog, or activate the focused button |
 | `Esc` | Cancel a dialog, close the finder, or close Settings |
 
 `⌘` means Command on macOS and Ctrl on Windows or Linux. `⌃` means Control on every platform. The default app shortcuts use Control; tree navigation also accepts Command on macOS. Change any binding in Settings → Shortcuts.
 
-Some keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q` or `W`. `⌃D`/`⌃U` and `⌃F`/`⌃B` work in the editor. With Vim on, Vim handles them. With Vim off on Windows or Linux, `⌃F` stays with CodeMirror search.
+Some keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, `Ctrl`/`Cmd` with `Q`, `Cmd` with `W`, and the main-area zoom keys (`Ctrl`/`Cmd` with `+`, `-`, `0` or the scroll wheel). `⌃D`/`⌃U` and `⌥↓`/`⌥↑` work in the editor. With Vim on, Vim handles the Control keys.
 
 ## Icons
 

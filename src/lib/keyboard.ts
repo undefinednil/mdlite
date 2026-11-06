@@ -5,7 +5,12 @@ export interface AppShortcutContext {
   settingsOpen: boolean
   cycleOpen: boolean
   save: boolean
+  findFile: boolean
+  find: boolean
+  closeFile: boolean
   toggle: boolean
+  focusTree: boolean
+  focusMain: boolean
 }
 
 export function appShortcutAllowed(event: KeyboardEvent, context: AppShortcutContext): boolean {
@@ -18,10 +23,21 @@ export function appShortcutAllowed(event: KeyboardEvent, context: AppShortcutCon
   const inCanvas = Boolean(context.target?.closest('.excalidraw-host'))
   const plainPaste =
     !context.mac && event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'v'
+  const focusShortcut = context.focusTree || context.focusMain
 
   if (inField && !context.save) return false
-  if (inCanvas && !context.save) return false
-  if (inEditor && !context.save && !(context.toggle && !plainPaste)) return false
+  if (inCanvas && !context.save && !context.closeFile && !focusShortcut) return false
+  if (
+    inEditor &&
+    !context.save &&
+    !context.findFile &&
+    !context.find &&
+    !context.closeFile &&
+    !(context.toggle && !plainPaste) &&
+    !focusShortcut
+  ) {
+    return false
+  }
   if ((context.paletteOpen || context.settingsOpen || context.cycleOpen) && !context.save) {
     return false
   }

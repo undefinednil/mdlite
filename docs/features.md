@@ -6,10 +6,10 @@ mdlite works with one active folder of notes at a time. You can keep several fol
 
 ## Browsing
 
-- **Folder view.** The main area lists the current folder in a table with Name, Kind, Size and Modified columns. Name, Size and Modified sort when you click their headers; click again to reverse. Kind is a label only. Breadcrumbs above the table move back up the folder path. Click a folder to enter it; `j` and `k` move the cursor and Enter opens the row.
-- **Sidebar tree.** The whole active folder is loaded once and filtered in the app, so typing in the filter is instant. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list.
-- **Tree filters.** Filter by path text in `contains`, `glob` or `regex` mode. Add a modified-date range, kind chips (`md`, `code`, `data`, `image`, `draw`, `other`) and size buckets. Sort by name or modified time.
-- **Selection.** Shift-click selects a range of tree rows, `⌘`-click or `Ctrl`-click toggles one row, and a plain click clears the selection and opens the row. `⌘A`/`Ctrl+A` selects every visible row and `Esc` clears it. With several rows selected, `d` moves all of them to the trash.
+- **Folder view.** The main area lists the current folder in a table with Name, Kind, Size and Modified columns. Name, Size and Modified sort when you click their headers; click again to reverse. Name starts A–Z, Size starts smallest first and Modified starts newest first, the same order as the tree. Kind is a label only. Breadcrumbs above the table move back up the folder path. Click a folder to enter it; `j` and `k` move the cursor and Enter opens the row. The cursor starts on the first row when a folder opens.
+- **Sidebar tree.** The whole active folder is loaded once and filtered in the app, so typing in the filter is instant. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list. Rows show the same per-kind icon as the folder table.
+- **Tree filters.** Filter by path text in `contains`, `glob` or `regex` mode. Add a modified-date range, kind chips (`md`, `code`, `data`, `image`, `draw`, `other`) and size buckets. Sort by name or modified time; folders stay first and the folder table uses the same order.
+- **Selection.** Shift-click selects a range of tree rows, `⌘`-click or `Ctrl`-click toggles one row, and a plain click clears the selection and opens the row. `⌘A`/`Ctrl+A` selects every visible row and `Esc` clears it. With several rows selected, `d` moves all of them to the trash. The tree, folder table and command palette share one selection model: the tree cursor follows the open file, and a rename or move carries the cursor and selection to the new path. The folder picker in Move keeps its own active row because it lists folders, not notes.
 - **Hidden and ignored items.** Any name that starts with a dot is hidden, along with `.git`, `node_modules`, `.obsidian`, `.trash`, `.cache`, `dist` and `.mdlite-trash`. Symlinks are not followed.
 
 ## Viewing and editing
@@ -26,11 +26,14 @@ mdlite works with one active folder of notes at a time. You can keep several fol
 
 SVG and Excalidraw files are read as text, so they share the 8 MiB text-read limit. Raster images are not read into the editor and do not hit that limit.
 
+One extension table drives the tree icon, the kind filter, the editor language and the drop check, so a file the tree opens as text, such as `.rs`, `.tf` or `.vue`, can also be dropped on the window.
+
 Markdown rendering includes:
 
-- Mermaid diagrams from fenced blocks tagged `mermaid`.
-- Code blocks highlighted by Shiki for the supported languages.
+- Mermaid diagrams from fenced blocks tagged `mermaid`. Each diagram has a zoom control in its top-right corner: zoom out, the current percentage, and zoom in. The percentage button resets it to 100%.
+- Code blocks highlighted by Shiki for the supported languages, including `hcl` for Terraform.
 - Relative links between notes: clicking one opens the target inside the app.
+- External `http(s)` links open in the system browser.
 - Relative images and videos resolved through the Tauri asset protocol, so a note can show media stored beside it.
 - A drag handle on images. Dragging writes `{width=N}` after the image in the Markdown source.
 - Draggable column edges on tables. Widths are remembered per file on that machine. Both handles also work with the arrow keys when focused.
@@ -54,11 +57,19 @@ Save and conflicts:
 
 Switching between view and edit keeps your place, measured as a fraction of the document height. In Markdown view, `j` and `k` scroll smoothly by a few lines, `gg` glides to the top and `G` to the bottom. Scrolling respects the system reduced-motion setting.
 
+The main area zooms from 50% to 300% with `Ctrl` (or `Cmd`) plus the scroll wheel, and with `Ctrl`/`Cmd` `+`, `-` and `0` (reset). The zoom covers the whole main area, both the reading view and the editor. As it grows, the column first widens until it fills the pane, then the main area scrolls sideways. Zoom starts at 100% after a restart and returns to 100% when you switch to another file. Excalidraw drawings are separate: the drawing keeps its own zoom and the main-area zoom keys and the scroll wheel leave it alone. Drag with the middle mouse button to pan the main area, which is handy once it is zoomed in.
+
+`Ctrl+F` finds inside the open note. The reading view shows a find bar in the top-right corner with the match count, previous and next buttons, `Enter` / `Shift+Enter` to step and `Esc` to close; every match is highlighted and the active one scrolls into view. In the editor, the same key opens CodeMirror's search panel.
+
+The pen button next to the Edit toggle turns the main area into a drawing surface for presentations. It is offered for every file in view mode except Excalidraw. Draw freehand in the picked colour; the 3px stroke suits handwriting. The eraser removes whole strokes instead of pixels, and `Ctrl+Z` / `Ctrl+Shift+Z` (or the Undo and Redo buttons) walk the stroke history. The drawing sits on the window, not on the page, so scrolling the note moves the content under the drawing and the drawing stays where it was put. The wheel still scrolls the note, `Ctrl` + wheel still zooms the main area, and the middle mouse button still pans. **Clear** erases the drawing, **Close** or the pen button turns the mode off, and opening another file closes the pen.
+
 The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings → Editor. Pasted text is stored with the app settings and no file is read. Vimrc support covers:
 
 - Mapping commands (`map`, `noremap`, `nmap`, `nnoremap`, `vmap`, `vnoremap`, `xmap`, `xnoremap`, `smap`, `snoremap`, `omap`, `onoremap`, `imap`, `inoremap`), including `<leader>` and `<silent>`.
+- A leader that is also a normal-mode command works, for example space or comma. After the leader key the editor waits up to 600 ms for the next key. If no mapping completes, the leader's own command runs.
 - `set` options for tab size, indentation, line numbers and `clipboard=unnamed`/`unnamedplus`. Other options depend on the Vim layer.
 - With a clipboard option set, unnamed yanks, deletes and changes write to the system clipboard, and returning to the window refreshes the Vim registers from it.
+- The `+` and `*` registers read and write the system clipboard through the Tauri clipboard plugin, so `"+p`, `"+y` and `clipboard=unnamedplus` mappings keep working in the packaged app.
 - Changing the vimrc removes mappings that are no longer present. Word wrap comes from the Settings toggle, so `set wrap` and `set nowrap` do not change it.
 - The `vim` badge tooltip shows how many lines were parsed, how many mappings were loaded and which lines were skipped.
 
@@ -71,9 +82,11 @@ The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings
 - **Restore.** The Trash button in the sidebar opens the trash browser. Restore uses the stored original path; if the original path is unknown, the browser asks for a relative path. Entries can also be deleted permanently.
 - **Existing targets.** Restore, rename and move refuse a target that already exists with "target already exists".
 - **Cut, copy, paste.** `x`, `y` and `p` work on the current row and show the pending clipboard item in the tree footer. Paste a copied item into another folder to duplicate it.
-- **Context menu.** Right-click a tree row or a folder-table row for New file, Copy, Paste, Rename, Move to trash, Move and Copy path. New file creates the entry inside a folder, or beside a file; a name ending in `/` creates a folder. Paste puts the copied item beside a file or inside a folder. Copy path writes the absolute path to the system clipboard. Right-clicking the empty space below the rows offers New file and Paste in the folder you are viewing.
+- **Context menu.** Right-click a tree row or a folder-table row for New file, Copy, Paste, Rename, Move to trash, Move, Reveal (Finder on macOS, File Explorer on Windows, the file manager on Linux) and Copy path. New file creates the entry inside a folder, or beside a file; a name ending in `/` creates a folder. Paste puts the copied item beside a file or inside a folder. Copy path writes the absolute path to the system clipboard. Right-clicking the empty space below the rows offers New file and Paste in the folder you are viewing.
 - **Selection delete.** With several rows selected, one confirm moves all of them to the trash. Nested selections are collapsed: selecting a folder and a file inside it deletes the folder once.
-- **Undo.** `u` covers create, rename, move, paste and trash. It lasts for the current session.
+- **Undo.** `u` covers create, rename, move, paste and trash through the same pipeline. It lasts for the current session. Every file operation checks the active root after its dialog; if the folder changed, the operation is cancelled and nothing is written.
+- **Close.** The close button in the header, or `Ctrl+W`, closes the open file after the save prompt if it has unsaved changes. The folder view for that file's folder is shown. A temporary file closed this way asks where to save it, unless it has no changes.
+- **Missing or unreadable files.** If a file cannot be opened, the main area shows a card with an icon, the reason, the path, **Try again** and **Close**. A file that is gone reads "File not found". The close button in the header and `Ctrl+W` work here too, so a failed open never traps the view.
 
 ## Search
 
@@ -89,19 +102,19 @@ The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings
 The gear button opens Settings, with a side menu of four pages:
 
 - **Root folders:** add, switch and remove roots. **Browse…** uses the native folder picker. The last root cannot be removed. The active root is what the tree, search, editor and file operations use. On first run, the app opens the folder picker when no root is configured.
-- **Editor:** turn Vim keybindings and word wrap on or off, set the main area width, and choose the vimrc source. The width is clamped to 50–100% of the main pane and applied as horizontal padding on the whole main body, so it affects the folder view, editor, Markdown view, trash and Settings. The sidebar keeps its width. A summary shows the resolved source, the loaded mappings, parsed lines and indentation.
+- **Editor:** turn Vim keybindings and word wrap on or off, set the main area width, and choose the vimrc source. The width is clamped to 50–100% of the main pane and applied as horizontal padding on the whole main body, so it affects the folder view, editor, Markdown view, trash and Settings. Excalidraw drawings ignore the setting and always use the full main area width. The sidebar keeps its width. A summary shows the resolved source, the loaded mappings, parsed lines and indentation.
 - **Shortcuts:** click a key and press a new combination. Shortcuts are grouped as Global, Editor and File tree. Backspace clears a key, Esc cancels, and each row can be reset to its default. A binding that is already used is rejected; a duplicate that comes from a hand-edited config is flagged.
 - **About:** the app version, config file path, current root, vimrc source and the keys that cannot be changed.
 
 Defaults are Vim on, word wrap on, main width 100, vimrc source `~/.vimrc` (automatic) and no shortcut overrides. Changes save automatically after 450 ms.
 
-These keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q` or `W`. `⌃D`/`⌃U` and `⌃F`/`⌃B` are editor shortcuts. With Vim on, Vim handles them. With Vim off on Windows or Linux, `⌃F` opens CodeMirror's search.
+These keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q`. `Cmd` with `W` stays reserved for the window. `⌃D`/`⌃U` and `⌥↓`/`⌥↑` are editor shortcuts. With Vim on, Vim handles the Control keys.
 
 Roots, editor settings and shortcut overrides live in one config file. [Architecture → Storage](architecture.md#storage) covers the path, the one-time import of older configs, the environment variables and what stays in memory.
 
 ## Temporary files
 
-Drop a supported text or code file from outside the app onto the window to open it without copying it into the root. The header marks it as `temporary`. `⌃S` opens a native save dialog instead of writing into the folder. Files above 4,000,000 bytes are rejected with "File is too large to open"; the normal text read cap is 8 MiB.
+Drop a file the tree opens as text from outside the app onto the window to open it without copying it into the root. The header marks it as `temporary`. `⌃S` opens a native save dialog instead of writing into the folder. Files above 4,000,000 bytes are rejected with "File is too large to open"; the normal text read cap is 8 MiB.
 
 While editing a note in the active folder, dropping or pasting an image or video saves it to an `images/` folder beside the note and inserts the Markdown or `<video>` tag. While editing a temporary file, the media goes to `<root>/images/`, because the temporary file has no folder inside the active folder.
 
@@ -131,7 +144,6 @@ The last five opened files are remembered for the session. Hold `⌃` and press 
 
 - Light theme only.
 - One window at a time.
-- External `http(s)` links do not open in the system browser. Copy the URL from the Markdown source until this is added.
 - There is no sync, no database and no conflict history. Undo lasts only for the current session.
 - Only the commands listed in Settings → Shortcuts can be rebound. The fixed keys listed under Settings stay fixed.
 - Markdown raw HTML is sanitized with DOMPurify, but notes can still load remote images. Treat notes from other people as content you chose to open.

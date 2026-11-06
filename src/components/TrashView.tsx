@@ -1,28 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { TrashEntry } from '../../shared/types'
+import type { RelPath, TrashEntry } from '../../shared/types'
 import { api } from '../api'
 import { askConfirm, askPrompt } from '../lib/dialogs'
-import { baseName } from '../lib/paths'
+import { formatDeletedAt, formatSize } from '../lib/format'
+import { baseName, relPath } from '../lib/paths'
+import { rowLeading, rowView } from '../lib/row'
 
 interface Props {
   onChanged: () => void
   onError: (message: string) => void
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function formatDeleted(ms: number): string {
-  if (!ms) return ''
-  return new Date(ms).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 
 export function TrashView({ onChanged, onError }: Props) {
@@ -47,12 +33,17 @@ export function TrashView({ onChanged, onError }: Props) {
 
   const restore = async (entry: TrashEntry) => {
     if (busy) return
-    const destination = entry.originalKnown
-      ? entry.original
-      : await askPrompt(
-          'Restore to (relative path)',
-          baseName(entry.original) || entry.name,
-        )
+    let destination: RelPath
+    if (entry.originalKnown) {
+      destination = entry.original
+    } else {
+      const typed = await askPrompt(
+        'Restore to (relative path)',
+        baseName(entry.original) || entry.name,
+      )
+      if (!typed) return
+      destination = relPath(typed)
+    }
     if (!destination) return
     setBusy(entry.path)
     try {
@@ -104,40 +95,57 @@ export function TrashView({ onChanged, onError }: Props) {
         </div>
       ) : (
         <div className="trash-list">
-          {entries.map((entry) => (
-            <div className="trash-row" key={entry.path}>
-              <span className="material-symbols-rounded trash-icon">
-                {entry.kind === 'dir' ? 'folder' : 'description'}
-              </span>
-              <div className="trash-info">
-                <span className="trash-name">{baseName(entry.original) || entry.name}</span>
-                <span className="trash-path">{entry.original || entry.name}</span>
+          {entries.map((entry) => {
+            const meta = [
+              entry.kind === 'dir' ? 'Folder' : formatSize(entry.size),
+              entry.deletedAt > 0 ? formatDeletedAt(entry.deletedAt) : '',
+              entry.originalKnown ? '' : 'original path unknown',
+            ]
+              .filter(Boolean)
+              .join(' · ')
+            const view = rowView({
+              base: 'trash-row',
+              path: entry.original || entry.name,
+              type: entry.kind,
+              icon: entry.kind === 'dir' ? 'folder' : 'description',
+              trailing: [meta],
+            })
+            const { icon } = rowLeading(view)
+            return (
+              <div className={view.className} key={entry.path}>
+                {icon?.kind === 'icon' && (
+                  <span className="material-symbols-rounded trash-icon row-icon">{icon.icon}</span>
+                )}
+                <div className="trash-info">
+                  <span className="trash-name row-label">{baseName(entry.original) || entry.name}</span>
+                  <span className="trash-path row-label">{entry.original || entry.name}</span>
+                </div>
+                {view.trailing.map((text) => (
+                  <span key={text} className="trash-meta">
+                    {text}
+                  </span>
+                ))}
+                <div className="trash-actions">
+                  <button
+                    type="button"
+                    className="btn small"
+                    disabled={busy === entry.path}
+                    onClick={() => void restore(entry)}
+                  >
+                    Restore
+                  </button>
+                  <button
+                    type="button"
+                    className="btn small danger"
+                    disabled={busy === entry.path}
+                    onClick={() => void purge(entry)}
+                  >
+                    Delete permanently
+                  </button>
+                </div>
               </div>
-              <span className="trash-meta">
-                {entry.kind === 'dir' ? 'Folder' : formatSize(entry.size)}
-                {entry.deletedAt > 0 ? ` · ${formatDeleted(entry.deletedAt)}` : ''}
-                {entry.originalKnown ? '' : ' · original path unknown'}
-              </span>
-              <div className="trash-actions">
-                <button
-                  type="button"
-                  className="btn small"
-                  disabled={busy === entry.path}
-                  onClick={() => void restore(entry)}
-                >
-                  Restore
-                </button>
-                <button
-                  type="button"
-                  className="btn small danger"
-                  disabled={busy === entry.path}
-                  onClick={() => void purge(entry)}
-                >
-                  Delete permanently
-                </button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

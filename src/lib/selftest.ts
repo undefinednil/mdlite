@@ -1,15 +1,8 @@
 import { api } from '../api'
-import { contentHash } from './paths'
-import type { TreeNode } from '../../shared/types'
-
-function firstFile(nodes: TreeNode[]): string | null {
-  for (const node of nodes) {
-    if (node.type === 'file') return node.path
-    const nested = node.children ? firstFile(node.children) : null
-    if (nested) return nested
-  }
-  return null
-}
+import { contentHash, relPath } from './paths'
+import { runShortcutChecks } from './shortcutE2e'
+import { collectFiles, walkTree } from './tree'
+import type { RelPath, TreeNode } from '../../shared/types'
 
 export async function runSelfTest(): Promise<void> {
   const report: Record<string, unknown> = {}
@@ -30,7 +23,7 @@ export async function runSelfTest(): Promise<void> {
   const tree = await api.tree().catch(() => ({ nodes: [] as TreeNode[] }))
   await check('tree', async () => ({ rootEntries: tree.nodes.length }))
 
-  const target = firstFile(tree.nodes)
+  const target = collectFiles(tree.nodes)[0] ?? null
 
   if (target) {
     await check('read', async () => {
@@ -47,14 +40,10 @@ export async function runSelfTest(): Promise<void> {
 
   await check('assetImage', async () => {
     const tree = await api.tree()
-    const images: string[] = []
-    const walk = (nodes: TreeNode[]) => {
-      for (const node of nodes) {
-        if (node.type === 'file' && /\.(png|jpe?g|gif|webp|svg)$/i.test(node.path)) images.push(node.path)
-        if (node.children) walk(node.children)
-      }
-    }
-    walk(tree.nodes)
+    const images: RelPath[] = []
+    walkTree(tree.nodes, (node) => {
+      if (node.type === 'file' && /\.(png|jpe?g|gif|webp|svg)$/i.test(node.path)) images.push(node.path)
+    })
     if (!images.length) return 'no images in root'
     const url = api.rawUrl(images[0])
     const loaded = await new Promise<number>((resolve) => {
@@ -83,7 +72,7 @@ export async function runSelfTest(): Promise<void> {
   })
 
   await check('write', async () => {
-    const saved = await api.save('temp/__selftest.json', '', 0, 0, contentHash(''), true)
+    const saved = await api.save(relPath('temp/__selftest.json'), '', 0, 0, contentHash(''), true)
     return saved
   })
 
@@ -93,6 +82,7 @@ export async function runSelfTest(): Promise<void> {
       askConfirm('self-test confirm'),
       new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
     ])
+    document.querySelector<HTMLButtonElement>('.dialog .btn')?.click()
     return { confirmReturned: confirmed }
   })
 
@@ -103,8 +93,14 @@ export async function runSelfTest(): Promise<void> {
     brand: document.querySelector('.brand')?.textContent?.trim() ?? null,
   }
 
+  try {
+    report.shortcuts = await runShortcutChecks()
+  } catch (error) {
+    report.shortcuts = [{ id: 'shortcut-suite', pass: false, detail: String(error) }]
+  }
+
   report.finished = new Date().toISOString()
   await api
-    .save('temp/__selftest.json', JSON.stringify(report, null, 2), 0, 0, contentHash(''), true)
+    .save(relPath('temp/__selftest.json'), JSON.stringify(report, null, 2), 0, 0, contentHash(''), true)
     .catch(() => undefined)
 }

@@ -38,13 +38,14 @@ The versions below are the ranges declared in `package.json` and `src-tauri/Carg
 - **React and TypeScript.** One `App` owns the open file, tree, roots, editor mode and keyboard handling. Components are plain function components with props; there is no global state library.
 - **Vite.** Development mode serves the UI on port 5173 and Tauri loads that URL. Release builds write static files to `dist/`, which Tauri embeds.
 - **CodeMirror 6.** Language support is split into small packages and loaded on demand per file extension. The editor is created once and reused across files. It is rebuilt when the vimrc source, the Vim switch, word wrap or the file's language extension changes; typing never recreates the view. The React key is the vimrc source plus the Vim switch.
+- **Vim boundary.** `@replit/codemirror-vim` and its core engine are pinned to exact versions. Every patch to the engine lives in `src/lib/vim.ts` (`:w`, registers, clipboard, mappings) and `src/lib/vimScroll.ts` (character coordinates); `Editor.tsx` only calls `attachVim(view, onSave)`. The packaged e2e covers the `+` register paste, `:w` and the editor scroll keys.
 - **markdown-it.** Renders Markdown with raw HTML enabled, automatic links and line breaks. The HTML then passes through DOMPurify. A post-processing step adds Shiki highlighting and Mermaid rendering with strict security.
 - **Shiki.** Uses the `github-light` theme so rendered code matches the app's light interface.
 - **Mermaid.** Loaded only when a document contains a `mermaid` code block.
 - **Excalidraw.** Loaded with a dynamic import, so the large drawing bundle is not part of the first screen.
 - **material-symbols.** Icon font shipped through npm and bundled locally; no icon CDN at runtime.
-- **Tauri APIs.** `@tauri-apps/api/core` for `invoke` and `convertFileSrc`, `@tauri-apps/api/event` for change events, `@tauri-apps/api/window` for the title and close guard, and the dialog plugin for native pickers.
-- **Tests.** `tsx` runs the TypeScript test files listed in the `test` script. `jsdom` supplies the DOM for `editorKeys.test.ts`; the other test files run in Node.
+- **Tauri APIs.** `@tauri-apps/api/core` for `invoke` and `convertFileSrc`, `@tauri-apps/api/event` for change events, `@tauri-apps/api/window` for the title and close guard, the dialog plugin for native pickers, and the clipboard plugin for the Vim `+` and `*` registers.
+- **Tests.** `tsx` runs every TypeScript test file matching the `src/**/*.test.ts` glob in the `test` script. `jsdom` supplies the DOM for `editorKeys.test.ts`; the other test files run in Node.
 
 ## Back end
 

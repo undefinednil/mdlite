@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef } from 'react'
+import type { RelPath } from '../../shared/types'
+import { api } from '../api'
 import { enhance, renderMarkdown } from '../lib/markdown'
+import { relPath } from '../lib/paths'
 
 interface Props {
   content: string
-  path: string
+  path: RelPath
   query?: string | string[]
-  onNavigate: (path: string) => void
+  onNavigate: (path: RelPath) => void
   onSourceChange?: (next: string) => void
 }
 
@@ -32,9 +35,18 @@ export function MarkdownView({ content, path, query, onNavigate, onSourceChange 
     const anchor = (event.target as HTMLElement).closest('a')
     if (!anchor) return
     const target = anchor.dataset.mdPath
-    if (!target) return
-    event.preventDefault()
-    onNavigate(target)
+    if (target) {
+      event.preventDefault()
+      onNavigate(relPath(target))
+      return
+    }
+    const url = anchor.dataset.mdUrl
+    if (url) {
+      event.preventDefault()
+      void api.openUrl(url)
+      return
+    }
+    if (!anchor.getAttribute('href')?.startsWith('#')) event.preventDefault()
   }
 
   return (

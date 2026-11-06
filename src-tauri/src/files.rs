@@ -6,7 +6,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
-use crate::paths::{is_media_name, safe_join};
+use crate::paths::{is_media_name, relative, safe_join};
 use crate::tree::millis;
 
 const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -84,7 +84,7 @@ pub fn read_text(root: &Path, rel: &str) -> ApiResult<FileDoc> {
         _ => return Err(ApiError::new("binary", "file is not text")),
     };
     Ok(FileDoc {
-        path: rel.to_string(),
+        path: relative(root, &abs),
         content,
         mtime: metadata.modified().map(millis).unwrap_or(0),
         size: metadata.len(),
@@ -160,7 +160,7 @@ pub fn write_text(
 
     let metadata = fs::metadata(&abs)?;
     Ok(SaveResult {
-        path: rel.to_string(),
+        path: relative(root, &abs),
         mtime: metadata.modified().map(millis).unwrap_or(0),
         size: metadata.len(),
     })
@@ -179,7 +179,7 @@ pub fn create_entry(root: &Path, rel: &str, is_dir: bool) -> ApiResult<String> {
     } else {
         fs::write(&abs, b"")?;
     }
-    Ok(rel.to_string())
+    Ok(relative(root, &abs))
 }
 
 fn assert_name(name: &str) -> ApiResult<()> {
@@ -213,8 +213,8 @@ pub fn rename_entry(root: &Path, rel: &str, name: &str) -> ApiResult<String> {
     if to.exists() {
         return Err(ApiError::new("exists", "target already exists"));
     }
-    fs::rename(from, to)?;
-    Ok(to_rel)
+    fs::rename(from, &to)?;
+    Ok(relative(root, &to))
 }
 
 fn copy_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -254,9 +254,9 @@ pub fn transfer_entry(root: &Path, from_rel: &str, to_rel: &str, copy: bool) -> 
     if copy {
         copy_recursive(&from, &to)?;
     } else {
-        fs::rename(from, to)?;
+        fs::rename(from, &to)?;
     }
-    Ok(to_rel.to_string())
+    Ok(relative(root, &to))
 }
 
 fn trash_meta_path(trash_dir: &Path, entry_name: &str) -> PathBuf {
@@ -303,7 +303,7 @@ pub fn trash_entry(root: &Path, rel: &str) -> ApiResult<String> {
         return Err(ApiError::bad_request("cannot trash the root folder"));
     }
     let metadata = fs::metadata(&from)?;
-    let original = rel.trim_start_matches('/').to_string();
+    let original = relative(root, &from);
     let name = from
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
@@ -333,7 +333,7 @@ pub fn trash_entry(root: &Path, rel: &str) -> ApiResult<String> {
     fs::rename(&from, &target)?;
     let kind = if metadata.is_dir() { "dir" } else { "file" };
     write_trash_meta(&trash_dir, &entry_name, &original, stamp, kind);
-    Ok(format!("{TRASH_DIR}/{entry_name}"))
+    Ok(relative(root, &target))
 }
 
 pub fn trash_list(root: &Path) -> ApiResult<Vec<TrashEntry>> {
@@ -398,7 +398,7 @@ pub fn restore_entry(root: &Path, from_rel: &str, to_rel: &str) -> ApiResult<Str
     if let Some(entry_name) = from.file_name().map(|value| value.to_string_lossy().to_string()) {
         remove_trash_meta(&trash_root, &entry_name);
     }
-    Ok(to_rel.to_string())
+    Ok(relative(root, &to))
 }
 
 pub fn trash_purge(root: &Path, rel: &str) -> ApiResult<()> {
@@ -677,6 +677,67 @@ mod tests {
         fs::write(root.join("a.md"), "x").unwrap();
         assert!(transfer_entry(&root, "a.md", "missing/a.md", false).is_err());
         assert!(!root.join("missing").exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_and_writes_return_the_canonical_relative_path() {
+        let root = scratch();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/note.md"), "one").unwrap();
+
+        let doc = read_text(&root, "/docs/./note.md").unwrap();
+        assert_eq!(doc.path, "docs/note.md");
+
+        let saved = write_text(&root, "/docs//note.md", "two", None, None, None, false).unwrap();
+        assert_eq!(saved.path, "docs/note.md");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn created_renamed_and_transferred_files_return_their_canonical_paths() {
+        let root = scratch();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join("archive")).unwrap();
+
+        let created = create_entry(&root, "/docs/../draft.md", false).unwrap();
+        assert_eq!(created, "draft.md");
+
+        let renamed = rename_entry(&root, "/draft.md", "final.md").unwrap();
+        assert_eq!(renamed, "final.md");
+
+        let moved = transfer_entry(&root, "/final.md", "/archive//final.md", false).unwrap();
+        assert_eq!(moved, "archive/final.md");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_renamed_file_returns_its_new_canonical_path() {
+        let root = scratch();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/note.md"), "one").unwrap();
+
+        let renamed = rename_entry(&root, "/docs/./note.md", "next.md").unwrap();
+        assert_eq!(renamed, "docs/next.md");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn trash_and_restore_return_the_canonical_relative_path() {
+        let root = scratch();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/note.md"), "one").unwrap();
+
+        let trashed = trash_entry(&root, "/docs//note.md").unwrap();
+        assert_eq!(trashed, ".mdlite-trash/note.md");
+        assert_eq!(trash_list(&root).unwrap()[0].original, "docs/note.md");
+
+        let restored = restore_entry(&root, &trashed, "/docs/../docs/note.md").unwrap();
+        assert_eq!(restored, "docs/note.md");
 
         fs::remove_dir_all(&root).ok();
     }

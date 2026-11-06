@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Excalidraw } from '@excalidraw/excalidraw'
+import type { RelPath } from '../../shared/types'
 import '@excalidraw/excalidraw/index.css'
 
 interface Props {
-  path: string
+  path: RelPath
   content: string
   editing: boolean
   onChange: (value: string) => void

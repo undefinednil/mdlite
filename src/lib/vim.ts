@@ -1,4 +1,7 @@
-import { Vim } from '@replit/codemirror-vim'
+import { readText, writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { Vim, type CM5EditorInterface } from '@replit/codemirror-vim'
+import type { EditorView } from '@codemirror/view'
+import { patchVimCharCoords } from './vimScroll'
 import type { VimSettings } from './vimrc'
 
 let saveHandler: (() => void) | null = null
@@ -8,9 +11,32 @@ let clipboardMode = ''
 let clipboardRevision = 0
 let appliedSignature = ''
 let appliedOptions: Record<string, string | number | boolean> = {}
+let browserRead: (() => Promise<string>) | null = null
+let browserWrite: ((text: string) => Promise<void>) | null = null
 
-export function setSaveHandler(handler: (() => void) | null) {
-  saveHandler = handler
+// A mapping such as `<leader>d` where the leader is space or comma is a prefix
+// of the mapping, but the Vim layer also has a complete command for that single
+// key (space moves right, comma repeats the last character search) and runs it
+// before the next key arrives. The router holds a key that starts a mapping and
+// hands the whole sequence to the Vim layer once it is complete.
+const KEY_ROUTER_TIMEOUT = 600
+// A wildcard key can never equal a typed sequence, so the Vim layer keeps handling those mappings.
+const WILDCARD_LHS = /<(character|register)>/i
+
+let nativeHandleKey: typeof Vim.handleKey | null = null
+let routedMappings: VimSettings['mappings'] = []
+let pendingKeys: string[] = []
+let pendingCm: CM5EditorInterface | null = null
+let pendingTimer: ReturnType<typeof setTimeout> | null = null
+
+export function attachVim(view: EditorView, onSave: () => void): () => void {
+  saveHandler = onSave
+  patchVimCharCoords(view)
+  const frame = requestAnimationFrame(() => patchVimCharCoords(view))
+  return () => {
+    cancelAnimationFrame(frame)
+    if (saveHandler === onSave) saveHandler = null
+  }
 }
 
 function clipboardEnabled() {
@@ -20,32 +46,64 @@ function clipboardEnabled() {
     .some((value) => value === 'unnamed' || value === 'unnamedplus')
 }
 
-function writeClipboard(text: string, linewise?: boolean, blockwise?: boolean) {
+async function readSystemClipboard(): Promise<string | null> {
   try {
-    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).catch(() => undefined)
+    return await readText()
   } catch {}
+  if (!browserRead) return null
+  try {
+    return await browserRead()
+  } catch {
+    return null
+  }
+}
+
+async function writeSystemClipboard(text: string) {
+  try {
+    await writeText(text)
+    return
+  } catch {}
+  if (!browserWrite) return
+  try {
+    await browserWrite(text)
+  } catch {}
+}
+
+function writeClipboard(text: string, linewise?: boolean, blockwise?: boolean) {
+  void writeSystemClipboard(text)
   Vim.getRegisterController().getRegister('+').setText(text, linewise, blockwise)
 }
 
-function syncClipboard() {
-  if (!clipboardEnabled() || !navigator.clipboard?.readText) return
+async function syncClipboard() {
+  if (!clipboardEnabled()) return
   const revision = clipboardRevision
-  try {
-    void navigator.clipboard
-      .readText()
-      .then((text) => {
-        if (!text || !clipboardEnabled() || revision !== clipboardRevision) return
-        const controller = Vim.getRegisterController()
-        controller.unnamedRegister.setText(text)
-        controller.getRegister('+').setText(text)
-      })
-      .catch(() => undefined)
-  } catch {}
+  const text = await readSystemClipboard()
+  if (!text || !clipboardEnabled() || revision !== clipboardRevision) return
+  const controller = Vim.getRegisterController()
+  controller.unnamedRegister.setText(text)
+  controller.getRegister('+').setText(text)
 }
 
 function ensureClipboard() {
   if (clipboardReady) return
   clipboardReady = true
+  const clipboard = navigator.clipboard
+  const read =
+    clipboard && typeof clipboard.readText === 'function'
+      ? clipboard.readText.bind(clipboard)
+      : null
+  const write =
+    clipboard && typeof clipboard.writeText === 'function'
+      ? clipboard.writeText.bind(clipboard)
+      : null
+  browserRead = read
+  browserWrite = write
+  if (clipboard && read) {
+    clipboard.readText = () => readSystemClipboard().then((text) => text ?? '')
+  }
+  if (clipboard && write) {
+    clipboard.writeText = (text) => writeSystemClipboard(text)
+  }
   const controller = Vim.getRegisterController()
   try {
     Vim.defineRegister('*', controller.getRegister('+'))
@@ -67,9 +125,96 @@ function ensureClipboard() {
   window.addEventListener('focus', syncClipboard)
 }
 
+function clearPendingKeys() {
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer)
+    pendingTimer = null
+  }
+  pendingKeys = []
+  pendingCm = null
+}
+
+function flushPendingKeys() {
+  const cm = pendingCm
+  const keys = pendingKeys
+  clearPendingKeys()
+  if (!cm || !nativeHandleKey || !cm.state?.vim) return
+  for (const key of keys) nativeHandleKey(cm, key, 'user')
+}
+
+function scheduleFlush() {
+  if (pendingTimer !== null) clearTimeout(pendingTimer)
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null
+    flushPendingKeys()
+  }, KEY_ROUTER_TIMEOUT)
+}
+
+function mappingKeysFor(cm: CM5EditorInterface): string[] {
+  const vim = cm.state?.vim
+  if (!vim || vim.insertMode || vim.expectLiteralNext) return []
+  const context = vim.inputState?.operator ? 'operatorPending' : vim.visualMode ? 'visual' : 'normal'
+  const keys: string[] = []
+  for (const mapping of routedMappings) {
+    if (mapping.ctx && mapping.ctx !== context) continue
+    if (WILDCARD_LHS.test(mapping.lhs)) continue
+    keys.push(mapping.lhs)
+  }
+  return keys
+}
+
+function routeKey(
+  cm: CM5EditorInterface,
+  key: string,
+  origin: string,
+): undefined | boolean {
+  const native = nativeHandleKey
+  if (!native) return undefined
+  if (origin !== 'user') {
+    flushPendingKeys()
+    return native(cm, key, origin)
+  }
+  const lhsList = mappingKeysFor(cm)
+  if (!lhsList.length) return native(cm, key, origin)
+  if (pendingKeys.length && pendingCm !== cm) {
+    flushPendingKeys()
+    return routeKey(cm, key, origin)
+  }
+
+  const candidate = pendingKeys.join('') + key
+  const full = lhsList.some((lhs) => lhs === candidate)
+  const partial = lhsList.some((lhs) => lhs.length > candidate.length && lhs.startsWith(candidate))
+
+  if (pendingKeys.length) {
+    if (full) {
+      clearPendingKeys()
+      return native(cm, candidate, 'mapping')
+    }
+    if (partial) {
+      pendingKeys.push(key)
+      scheduleFlush()
+      return true
+    }
+    flushPendingKeys()
+    return routeKey(cm, key, origin)
+  }
+  if (!partial) return native(cm, key, origin)
+  pendingKeys = [key]
+  pendingCm = cm
+  scheduleFlush()
+  return true
+}
+
+function installKeyRouter() {
+  if (nativeHandleKey) return
+  nativeHandleKey = Vim.handleKey.bind(Vim)
+  Vim.handleKey = routeKey
+}
+
 function ensureCommands() {
   if (commandsReady) return
   commandsReady = true
+  installKeyRouter()
   try {
     Vim.defineOption('clipboard', '', 'string', ['cb', 'cbr'], (value) => {
       if (value === undefined) return clipboardMode
@@ -133,6 +278,8 @@ function resetOption(name: string, value: string | number | boolean) {
 
 export function applyVimSettings(settings: VimSettings, enabled = true): VimSettings {
   if (!enabled) {
+    clearPendingKeys()
+    routedMappings = []
     try {
       Vim.mapclear()
     } catch {
@@ -145,6 +292,8 @@ export function applyVimSettings(settings: VimSettings, enabled = true): VimSett
   ensureCommands()
   const signature = `${settings.sourceKey}|${JSON.stringify(settings.options)}|${JSON.stringify(settings.mappings)}`
   if (appliedSignature === signature) return settings
+  clearPendingKeys()
+  routedMappings = settings.mappings
   try {
     Vim.mapclear()
   } catch {}

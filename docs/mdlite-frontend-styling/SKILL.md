@@ -9,7 +9,7 @@ mdlite has one visual language: a light, calm, document-first desktop app. The R
 
 ## Ground rules
 
-- Put app styles in `src/styles.css`. There is no CSS framework and no CSS-in-JS. The CodeMirror theme is the one exception: it is an object in `src/components/Editor.tsx`. Third-party widgets such as CodeMirror, Excalidraw, Mermaid, and Shiki handle their own styling.
+- Put app styles in `src/styles.css`. There is no CSS framework and no CSS-in-JS. The CodeMirror theme is the one exception: it is an object in `src/lib/editorTheme.ts`. Third-party widgets such as CodeMirror, Excalidraw, Mermaid, and Shiki handle their own styling.
 - Read tokens from `:root` and prefer them for every surface, border, and text color. A few legacy rules still use literal whites; do not add more.
 - The app is light theme only. Do not add dark-mode branches.
 - Use `material-symbols-rounded` for icons. The default size is 18px; adjust it only for a specific component.
@@ -37,7 +37,7 @@ mdlite has one visual language: a light, calm, document-first desktop app. The R
 | `--mark` | `#f59e0b` | Dirty marker |
 | `--mono` | system monospace stack | Paths, code, key bindings |
 | `--sidebar-width` | `296px` | App sidebar |
-| `--main-width` | `100%` default | Content width; `.main-body` uses it for horizontal padding. Set in Settings → Editor, 50–100%. |
+| `--main-width` | `100%` default | Content width; `App.tsx` turns it into the `.main-zoom` column width. Set in Settings → Editor, 50–100%. Ignored by Excalidraw, which gets `full` on `.main-body` and uses the whole main area. |
 
 Status colors use the same families already in the file: green `#15803d` / `#ecfdf5`, amber `#92400e` / `#fef3c7`, red `#b91c1c` / `#fef2f2`.
 
@@ -58,7 +58,7 @@ Status colors use the same families already in the file: green `#15803d` / `#ecf
 - `.app` is a full-height grid: `var(--sidebar-width) minmax(0, 1fr)`. The page itself never scrolls.
 - `.sidebar` is a flex column: 46px header, filter area, scrolling tree, footer.
 - `.main` is a flex column: 46px header on `--panel`, then a body that scrolls in view mode and clips in edit mode.
-- `.main-body` has left and right padding of `calc((100% - var(--main-width)) / 2)`. The Main area width setting therefore changes the content width in the folder view, editor, Markdown, trash and Settings.
+- `.main-body` scrolls the main area and holds one `.main-zoom` wrapper. `App.tsx` measures the pane width and reads the view's cap from the stylesheet (the view root's `max-width`, or the CodeMirror content's for the editor), then sets the wrapper to the Main area width in px capped at that value and sets the body's left and right padding so that page is centred. The cap is never read from a live element width, because the element is sized from the cap. The wrapper carries the `zoom` value, so the whole main area scales together: the padding shrinks to `0` when the zoomed page fills the pane, and further zoom makes `.main-body` scroll sideways from the page's left edge. The `full` class sets both paddings to `0`; `App.tsx` adds it while an Excalidraw drawing is open, so drawings always use the full main area at 100% zoom.
 - Tree rows are 26px tall and virtualized. Folder-table rows are 38px.
 - Markdown, media, settings and trash views are centered with a maximum width of about 1000–1100px.
 - Overlays for the palette, dialogs, recent-file cycle, and drop zone are fixed and sit above the app.
@@ -88,8 +88,10 @@ Reuse these instead of new controls:
 - **Palette.** A 760px card capped at 70vh, a 15px search field with a bottom border only, accent-soft on the active row, and monospace content matches.
 - **Recent files.** A centered card 380–560px wide, 14vh from the top, with icon, file name, and muted directory per row.
 - **Settings.** Use section titles in uppercase muted text. A setting row is a white bordered card with a title, one-line help, and a control. Group related rows with `.setting-list`. Number inputs use `type="number"` with min/max and an `aria-label`; they keep a text draft, and blur or Enter commits the clamped value.
-- **Trees and tables.** Hover uses white or `--panel`. Active selection uses `--accent-soft`; a marked multi-selection uses solid `--accent` with white text. Metadata is muted and right aligned.
-- **Markdown.** Headings are dark blue; links use the accent; inline code is a soft pink; blockquotes are pale blue; tables have quiet borders and zebra rows. Table cells and inline code use `overflow-wrap: anywhere` so long code tokens wrap instead of breaking the table. Code blocks keep the `github-light` Shiki theme.
+- **Find bar.** A small floating card at the top-right of the main area (54px from the top, 22px from the right), above the content: a search icon, a 200px `.text-input`, a right-aligned match count in muted tabular numbers, and previous/next/close `.icon-btn` controls. Matches in the reading view are `<mark class="find-hit">`; the active match adds `find-active` with the stronger amber background.
+- **Pen overlay.** `.pen-layer` is absolutely positioned inside `.main`, starting below the 46px header, above the content (z-index 10) and below the floating actions. The canvas fills the layer at the device pixel ratio; the toolbar is a rounded card at the top centre, grouped by thin `.pen-divider` rules: pen and eraser tools, the native colour input, Undo and Redo, Clear and Close. The pen button and the Edit pill share the fixed `.floating-actions` row at the bottom right, and the pen shows an accent fill while it is on.
+- **Trees and tables.** Hover uses white or `--panel`. Active selection uses `--accent-soft`; a marked multi-selection uses solid `--accent` with white text. Metadata is muted and right aligned. Row state class names, leading slots, trailing text and keyboard moves come from `src/lib/row.ts`; do not rebuild the class template in a view. Read the leading slots with `rowLeading`: only folder rows have a twisty slot, so a file row has its icon at position 0. Use `.row-icon` on a leading icon and `.row-label` on a truncating name or path. Add the state class the row model returns (`active`, `selected`, `marked`, `cut`, `context`, `current-dir`, `is-dir`) instead of writing one by hand.
+- **Markdown.** Headings are dark blue; links use the accent; inline code is a soft pink; blockquotes are pale blue; tables have quiet borders and zebra rows. Table cells and inline code use `overflow-wrap: anywhere` so long code tokens wrap instead of breaking the table. Code blocks keep the `github-light` Shiki theme. A Mermaid diagram sits in a `.mermaid-block` card with a small `.mermaid-zoom` control (zoom out, percentage, zoom in) in the top-right corner.
 - **Editor.** CodeMirror uses a white canvas, 14.5px monospace text, 1.75 line height, centered content up to 1100px, an accent caret, and a light blue selection. Fenced and indented code blocks get a full-line `#f6f8fa` background; inline code uses teal text without a background.
 - **Empty states.** Centered or padded muted text, usually 12.5px. Keep them short and literal.
 

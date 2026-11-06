@@ -1,5 +1,7 @@
+import type { RelPath } from '../../shared/types'
+
 export interface FolderChoice {
-  path: string
+  path: RelPath
   label: string
   depth: number
 }
@@ -14,8 +16,8 @@ export type DialogRequest =
       kind: 'folder'
       message: string
       folders: FolderChoice[]
-      defaultPath?: string
-      resolve: (value: string | null) => void
+      defaultPath?: RelPath
+      resolve: (value: RelPath | null) => void
     }
 
 type Listener = (request: DialogRequest) => void
@@ -68,8 +70,8 @@ export function askPrompt(message: string, value = ''): Promise<string | null> {
 export function askFolder(
   message: string,
   folders: FolderChoice[],
-  defaultPath?: string,
-): Promise<string | null> {
+  defaultPath?: RelPath,
+): Promise<RelPath | null> {
   return new Promise((resolve) => {
     if (!listener) {
       resolve(null)

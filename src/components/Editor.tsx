@@ -27,49 +27,13 @@ import {
 } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
-import { highlightSelectionMatches, searchKeymap } from '@codemirror/search'
+import { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search'
 import { loadLanguageExtension } from '../lib/languages'
 import { editorKeyExtensions } from '../lib/editorKeys'
-import { setSaveHandler } from '../lib/vim'
+import { editorTheme } from '../lib/editorTheme'
+import { attachVim } from '../lib/vim'
+import type { RelPath } from '../../shared/types'
 import type { VimSettings } from '../lib/vimrc'
-
-const lightTheme = EditorView.theme(
-  {
-    '&': { height: '100%', backgroundColor: '#ffffff', color: '#24292f', fontSize: '14.5px' },
-    '.cm-scroller': {
-      fontFamily: "'SFMono-Regular', 'JetBrains Mono', Menlo, Consolas, monospace",
-      lineHeight: '1.75',
-      padding: '34px 0 140px',
-      justifyContent: 'center',
-    },
-    '.cm-content': {
-      maxWidth: '1100px',
-      padding: '0 32px',
-      boxSizing: 'border-box',
-      caretColor: '#2563eb',
-    },
-    '.cm-line': { padding: '0' },
-    '.cm-gutters': {
-      backgroundColor: 'transparent',
-      color: '#b6bac2',
-      border: 'none',
-      paddingLeft: '8px',
-    },
-    '.cm-activeLine': { backgroundColor: '#2563eb0a' },
-    '.cm-activeLineGutter': { backgroundColor: 'transparent', color: '#2563eb' },
-    '.cm-code-block-line': { backgroundColor: '#f6f8fa' },
-    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
-      backgroundColor: '#bfdbfe88',
-    },
-    '.cm-cursor': { borderLeftColor: '#2563eb', borderLeftWidth: '2px' },
-    '.cm-panels': { backgroundColor: '#f7f8fa', color: '#24292f' },
-    '.cm-fat-cursor': { background: '#2563eb33', outline: 'none' },
-    '&:not(.cm-focused) .cm-fat-cursor': { background: 'transparent', outline: '1px solid #2563eb44' },
-    '.cm-searchMatch': { backgroundColor: '#fde68a' },
-    '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: '#fbbf24' },
-  },
-  { dark: false },
-)
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: '#6a737d', fontStyle: 'italic' },
@@ -152,7 +116,7 @@ const codeBlockBackground = ViewPlugin.fromClass(
 
 interface Props {
   value: string
-  filePath: string
+  filePath: RelPath
   settings: VimSettings
   vimEnabled: boolean
   wordWrap: boolean
@@ -161,6 +125,7 @@ interface Props {
   onSave: () => void
   focusRef?: { current: (() => void) | null }
   insertRef?: { current: ((text: string) => void) | null }
+  findRef?: { current: (() => void) | null }
   onMedia?: (file: File) => Promise<string | null>
 }
 
@@ -179,6 +144,7 @@ export function Editor({
   onSave,
   focusRef,
   insertRef,
+  findRef,
   onMedia,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -196,12 +162,6 @@ export function Editor({
   onSaveRef.current = onSave
   onMediaRef.current = onMedia
   shortcutsRef.current = shortcuts
-
-  useEffect(() => {
-    const handler = () => onSaveRef.current()
-    setSaveHandler(handler)
-    return () => setSaveHandler(null)
-  }, [])
 
   useEffect(() => {
     const host = hostRef.current
@@ -238,7 +198,7 @@ export function Editor({
         vimEnabled,
         getShortcuts: () => shortcutsRef.current,
       }),
-      lightTheme,
+      editorTheme,
       ...(wordWrap ? [EditorView.lineWrapping] : []),
       EditorState.tabSize.of(settings.tabstop),
       indentUnit.of(indent),
@@ -290,7 +250,14 @@ export function Editor({
     })
 
     viewRef.current = view
+    const detachVim = attachVim(view, () => onSaveRef.current())
     if (focusRef) focusRef.current = () => view.focus()
+    if (findRef) {
+      findRef.current = () => {
+        view.focus()
+        openSearchPanel(view)
+      }
+    }
     if (insertRef) {
       insertRef.current = (text: string) => {
         const head = view.state.selection.main.head
@@ -311,12 +278,14 @@ export function Editor({
 
     return () => {
       destroyed = true
+      detachVim()
       if (focusRef) focusRef.current = null
+      if (findRef) findRef.current = null
       if (insertRef) insertRef.current = null
       view.destroy()
       viewRef.current = null
     }
-  }, [settings.sourceKey, languageKey, focusRef, vimEnabled, wordWrap])
+  }, [settings.sourceKey, languageKey, focusRef, findRef, vimEnabled, wordWrap])
 
   useEffect(() => {
     const view = viewRef.current

@@ -1,30 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { TreeNode } from '../../shared/types'
-import { formatKind, iconFor, iconTone } from '../lib/paths'
+import type { RelPath, TreeNode } from '../../shared/types'
+import { formatKind } from '../lib/fileType'
+import { formatDate, formatSize } from '../lib/format'
+import { dirname, relPath } from '../lib/paths'
+import { rowActivation, rowKeyMove, rowLeading, rowMoveIndex, rowView } from '../lib/row'
+import { createSelection } from '../lib/selection'
 import { matchesBinding, matchesCommand } from '../lib/shortcuts'
-
-type SortKey = 'name' | 'size' | 'mtime'
+import {
+  defaultSortDirection,
+  findNode,
+  sortNodes,
+  type TreeSort,
+  type TreeSortKey,
+} from '../lib/tree'
+import { useSelectionSnapshot } from '../lib/useSelection'
 
 interface Props {
   nodes: TreeNode[]
   shortcuts: Record<string, string>
-  dir: string
+  dir: RelPath
   rootName: string
-  onOpenDir: (path: string) => void
-  onSelect: (path: string) => void
-  onContextMenu: (path: string, type: 'dir' | 'file', x: number, y: number) => void
-}
-
-function findNode(nodes: TreeNode[], path: string): TreeNode | null {
-  if (!path) return null
-  for (const node of nodes) {
-    if (node.path === path) return node
-    if (node.type === 'dir' && node.children && path.startsWith(`${node.path}/`)) {
-      const found = findNode(node.children, path)
-      if (found) return found
-    }
-  }
-  return null
+  openFile: RelPath | null
+  onOpenDir: (path: RelPath) => void
+  onSelect: (path: RelPath) => void
+  onContextMenu: (path: RelPath, type: 'dir' | 'file', x: number, y: number) => void
 }
 
 export function FolderView({
@@ -32,18 +31,15 @@ export function FolderView({
   shortcuts,
   dir,
   rootName,
+  openFile,
   onOpenDir,
   onSelect,
   onContextMenu,
 }: Props) {
-  const [sortKey, setSortKey] = useState<SortKey>('name')
-  const [ascending, setAscending] = useState(true)
-  const [cursorPath, setCursorPath] = useState<string | null>(null)
+  const [sort, setSort] = useState<TreeSort>({ key: 'name', direction: 'asc' })
+  const selection = useMemo(() => createSelection<RelPath>(), [])
+  const { cursor } = useSelectionSnapshot(selection)
   const rootRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    setCursorPath(null)
-  }, [dir])
 
   useEffect(() => {
     if (document.activeElement && document.activeElement !== document.body) return
@@ -53,104 +49,102 @@ export function FolderView({
   const current = useMemo(() => findNode(nodes, dir), [nodes, dir])
   const entries = useMemo(() => {
     const list = dir ? (current?.children ?? []) : nodes
-    const sorted = [...list].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
-      let result = 0
-      if (sortKey === 'size') result = a.size - b.size
-      else if (sortKey === 'mtime') result = a.mtime - b.mtime
-      else result = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-      return ascending ? result : -result
-    })
-    return sorted
-  }, [nodes, dir, current, sortKey, ascending])
+    return sortNodes(list, sort)
+  }, [nodes, dir, current, sort])
 
-  const cursor = cursorPath ? entries.findIndex((entry) => entry.path === cursorPath) : -1
+  const entryPaths = useMemo(() => entries.map((entry) => entry.path), [entries])
+  const cursorIndex = cursor === null ? -1 : entries.findIndex((entry) => entry.path === cursor)
 
   useEffect(() => {
-    if (cursorPath && cursor < 0) {
-      setCursorPath(null)
-      return
-    }
-    if (cursor < 0) return
+    selection.sync(openFile, entryPaths)
+  }, [selection, openFile, entryPaths])
+
+  useEffect(() => {
+    if (cursorIndex < 0) return
     rootRef.current
-      ?.querySelector<HTMLElement>(`tr[data-index="${cursor}"]`)
+      ?.querySelector<HTMLElement>(`tr[data-index="${cursorIndex}"]`)
       ?.scrollIntoView({ block: 'nearest' })
-  }, [cursor, cursorPath])
+  }, [cursorIndex])
 
   const crumbs = useMemo(() => {
     const parts = dir ? dir.split('/') : []
-    const list = [{ label: rootName, path: '' }]
-    let acc = ''
+    const list: { label: string; path: RelPath }[] = [{ label: rootName, path: relPath('') }]
+    let acc = relPath('')
     for (const part of parts) {
-      acc = acc ? `${acc}/${part}` : part
+      acc = relPath(acc ? `${acc}/${part}` : part)
       list.push({ label: part, path: acc })
     }
     return list
   }, [dir, rootName])
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setAscending((value) => !value)
-    else {
-      setSortKey(key)
-      setAscending(true)
-    }
+  const toggleSort = (key: TreeSortKey) => {
+    setSort((current) =>
+      current.key === key
+        ? { key, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+        : { key, direction: defaultSortDirection(key) },
+    )
   }
 
   const activate = (index: number) => {
     const node = entries[index]
     if (!node) return
-    if (node.type === 'dir') onOpenDir(node.path)
+    if (rowActivation(node.type) === 'open-dir') onOpenDir(node.path)
     else onSelect(node.path)
   }
 
-  const moveCursor = (next: number) => {
-    if (!entries.length) return
-    const clamped = Math.max(0, Math.min(entries.length - 1, next))
-    setCursorPath(entries[clamped]?.path ?? null)
+  const moveCursor = (move: Parameters<typeof rowMoveIndex>[0], extend = false) => {
+    const index = rowMoveIndex(move, cursorIndex, entryPaths.length)
+    if (extend) selection.extend(entryPaths, index)
+    else selection.move(entryPaths, index)
   }
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if ((event.target as HTMLElement).closest('button, input, textarea, select, a')) return
-    const key = event.key.toLowerCase()
-    if (event.key === 'ArrowDown' || matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
+    const move = rowKeyMove(event.key, event.shiftKey)
+    if (move) {
       event.preventDefault()
-      moveCursor(cursor + 1)
+      moveCursor(move.move, move.extend)
       return
     }
-    if (event.key === 'ArrowUp' || matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
+    if (matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
       event.preventDefault()
-      moveCursor(cursor <= 0 ? 0 : cursor - 1)
+      moveCursor('down', event.shiftKey)
+      return
+    }
+    if (matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
+      event.preventDefault()
+      moveCursor('up', event.shiftKey)
       return
     }
     if (matchesCommand(shortcuts, 'tree.down', event)) {
       event.preventDefault()
-      moveCursor(cursor + 1)
+      moveCursor('down', event.shiftKey)
       return
     }
     if (matchesCommand(shortcuts, 'tree.up', event)) {
       event.preventDefault()
-      moveCursor(cursor <= 0 ? 0 : cursor - 1)
+      moveCursor('up', event.shiftKey)
       return
     }
     if (matchesCommand(shortcuts, 'tree.top', event)) {
       event.preventDefault()
-      moveCursor(0)
+      moveCursor('home')
       return
     }
     if (matchesCommand(shortcuts, 'tree.bottom', event)) {
       event.preventDefault()
-      moveCursor(entries.length - 1)
+      moveCursor('end')
       return
     }
     if (event.key === 'ArrowLeft' || event.key === 'Backspace') {
       if (!dir) return
       event.preventDefault()
-      onOpenDir(dir.split('/').slice(0, -1).join('/'))
+      onOpenDir(dirname(dir))
       return
     }
-    if (event.key === 'Enter' && cursor >= 0) {
+    if (event.key === 'Enter' && cursorIndex >= 0) {
       event.preventDefault()
-      activate(cursor)
+      activate(cursorIndex)
     }
   }
 
@@ -192,35 +186,35 @@ export function FolderView({
         <thead>
           <tr>
             <th
-              className={sortKey === 'name' ? 'sorted' : ''}
-              aria-sort={sortKey === 'name' ? (ascending ? 'ascending' : 'descending') : 'none'}
+              className={sort.key === 'name' ? 'sorted' : ''}
+              aria-sort={sort.key === 'name' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
             >
               <button type="button" className="sort-button" onClick={() => toggleSort('name')}>
-                Name {sortKey === 'name' && <span className="sort-mark">{ascending ? '▲' : '▼'}</span>}
+                Name {sort.key === 'name' && <span className="sort-mark">{sort.direction === 'asc' ? '▲' : '▼'}</span>}
               </button>
             </th>
             <th className="col-kind">Kind</th>
             <th
-              className={`col-size ${sortKey === 'size' ? 'sorted' : ''}`}
-              aria-sort={sortKey === 'size' ? (ascending ? 'ascending' : 'descending') : 'none'}
+              className={`col-size ${sort.key === 'size' ? 'sorted' : ''}`}
+              aria-sort={sort.key === 'size' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
             >
               <button type="button" className="sort-button" onClick={() => toggleSort('size')}>
-                Size {sortKey === 'size' && <span className="sort-mark">{ascending ? '▲' : '▼'}</span>}
+                Size {sort.key === 'size' && <span className="sort-mark">{sort.direction === 'asc' ? '▲' : '▼'}</span>}
               </button>
             </th>
             <th
-              className={`col-time ${sortKey === 'mtime' ? 'sorted' : ''}`}
-              aria-sort={sortKey === 'mtime' ? (ascending ? 'ascending' : 'descending') : 'none'}
+              className={`col-time ${sort.key === 'modified' ? 'sorted' : ''}`}
+              aria-sort={sort.key === 'modified' ? (sort.direction === 'asc' ? 'ascending' : 'descending') : 'none'}
             >
-              <button type="button" className="sort-button" onClick={() => toggleSort('mtime')}>
-                Modified {sortKey === 'mtime' && <span className="sort-mark">{ascending ? '▲' : '▼'}</span>}
+              <button type="button" className="sort-button" onClick={() => toggleSort('modified')}>
+                Modified {sort.key === 'modified' && <span className="sort-mark">{sort.direction === 'asc' ? '▲' : '▼'}</span>}
               </button>
             </th>
           </tr>
         </thead>
         <tbody>
           {dir && (
-            <tr className="file-row up-row" onClick={() => onOpenDir(dir.split('/').slice(0, -1).join('/'))}>
+            <tr className="file-row up-row" onClick={() => onOpenDir(dirname(dir))}>
               <td className="cell-name">
                 <span className="material-symbols-rounded file-icon tone-folder">drive_folder_upload</span>
                 <span className="file-name">..</span>
@@ -233,32 +227,47 @@ export function FolderView({
 
           {entries.map((node, index) => {
             const isDir = node.type === 'dir'
+            const view = rowView({
+              base: 'file-row',
+              path: node.path,
+              type: node.type,
+              state: { active: cursorIndex === index, dir: isDir },
+              trailing: [
+                isDir ? 'Folder' : formatKind(node.path),
+                isDir ? '—' : formatSize(node.size),
+                formatDate(node.mtime),
+              ],
+            })
+            const { icon } = rowLeading(view)
+            const columns = ['col-kind', 'col-size', 'col-time'] as const
             return (
               <tr
                 key={node.path}
                 data-index={index}
-                className={`file-row ${cursor === index ? 'active' : ''} ${isDir ? 'is-dir' : ''}`}
+                className={view.className}
                 onClick={() => {
-                  setCursorPath(node.path)
+                  selection.select(node.path)
                   activate(index)
                 }}
                 onContextMenu={(event) => {
                   event.preventDefault()
                   event.stopPropagation()
                   rootRef.current?.focus()
-                  setCursorPath(node.path)
+                  selection.select(node.path)
                   onContextMenu(node.path, node.type, event.clientX, event.clientY)
                 }}
               >
                 <td className="cell-name">
-                  <span className={`material-symbols-rounded file-icon ${iconTone(node.path, node.type)}`}>
-                    {iconFor(node.path, node.type)}
-                  </span>
-                  <span className="file-name">{isDir ? `${node.name}/` : node.name}</span>
+                  {icon?.kind === 'icon' && (
+                    <span className={`material-symbols-rounded file-icon row-icon ${icon.tone}`}>{icon.icon}</span>
+                  )}
+                  <span className="file-name row-label">{node.name}</span>
                 </td>
-                <td className="col-kind">{isDir ? 'Folder' : formatKind(node.path)}</td>
-                <td className="col-size">{isDir ? '—' : formatSize(node.size)}</td>
-                <td className="col-time">{formatDate(node.mtime)}</td>
+                {view.trailing.map((text, column) => (
+                  <td key={columns[column]} className={columns[column]}>
+                    {text}
+                  </td>
+                ))}
               </tr>
             )
           })}
@@ -274,23 +283,4 @@ export function FolderView({
       </table>
     </div>
   )
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function formatDate(ms: number): string {
-  if (!ms) return '—'
-  const date = new Date(ms)
-  const sameYear = date.getFullYear() === new Date().getFullYear()
-  return date.toLocaleString(undefined, {
-    year: sameYear ? undefined : 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }

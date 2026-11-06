@@ -46,12 +46,12 @@ export function fuzzyMatch(query: string, target: string): FuzzyMatch | null {
   return { score, indices }
 }
 
-export function rankFuzzy(
+export function rankFuzzy<T extends string>(
   query: string,
-  targets: string[],
+  targets: T[],
   limit = 60,
-): { path: string; score: number; indices: number[] }[] {
-  const out: { path: string; score: number; indices: number[] }[] = []
+): { path: T; score: number; indices: number[] }[] {
+  const out: { path: T; score: number; indices: number[] }[] = []
   for (const path of targets) {
     const match = fuzzyMatch(query, path)
     if (match) out.push({ path, score: match.score, indices: match.indices })

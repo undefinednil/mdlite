@@ -10,6 +10,12 @@ test('parses a quoted mapleader and applies it to mappings', () => {
   assert.equal(settings.skipped.length, 0)
 })
 
+test('a space leader expands to the Vim key notation', () => {
+  const settings = parseVimrc('let mapleader = " "\nnnoremap <leader>d dd\n', 'inline')
+  assert.equal(settings.leader, '<Space>')
+  assert.equal(settings.mappings[0]?.lhs, '<Space>d')
+})
+
 test('parses set options and reports unsupported lines', () => {
   const settings = parseVimrc('set ts=2 sw=2 et nu\nunknown-command\n', 'inline')
   assert.equal(settings.tabstop, 2)

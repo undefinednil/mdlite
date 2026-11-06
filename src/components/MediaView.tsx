@@ -1,13 +1,16 @@
+import type { RelPath } from '../../shared/types'
 import { api } from '../api'
-import { baseName, fileKind } from '../lib/paths'
+import { fileType } from '../lib/fileType'
+import { formatSize } from '../lib/format'
+import { baseName } from '../lib/paths'
 
 interface Props {
-  path: string
+  path: RelPath
   size: number
 }
 
 export function MediaView({ path, size }: Props) {
-  const kind = fileKind(path)
+  const kind = fileType(path).kind
 
   if (kind === 'image' || kind === 'svg') {
     return (
@@ -31,10 +34,4 @@ export function MediaView({ path, size }: Props) {
       </div>
     </div>
   )
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }

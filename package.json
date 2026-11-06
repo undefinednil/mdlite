@@ -6,7 +6,9 @@
     "dev": "tauri dev",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/paths.test.ts src/lib/scroll.test.ts src/lib/shortcuts.test.ts src/lib/vimrc.test.ts src/lib/vim.test.ts src/lib/keyboard.test.ts src/lib/editorKeys.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test && npm run build",
+    "e2e": "node scripts/e2e.mjs",
     "icons": "tsx scripts/make-app-icon.ts",
     "bundle": "node scripts/bundle.mjs",
     "bundle:mac": "node scripts/bundle.mjs app",
@@ -34,8 +36,9 @@
     "@codemirror/view": "^6.43.15",
     "@excalidraw/excalidraw": "^0.18.1",
     "@lezer/highlight": "^1.2.5",
-    "@replit/codemirror-vim": "^6.4.0",
+    "@replit/codemirror-vim": "6.4.0",
     "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "dompurify": "^3.4.17",
     "markdown-it": "^15.0.3",
@@ -57,5 +60,8 @@
     "tsx": "^4.20.6",
     "typescript": "^7.0.2",
     "vite": "^8.3.5"
+  },
+  "overrides": {
+    "@replit/codemirror-vim-core": "0.1.0"
   }
 }

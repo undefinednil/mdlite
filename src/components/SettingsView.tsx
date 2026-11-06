@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getVersion } from '@tauri-apps/api/app'
-import type { AppSettings, RootEntry, VimrcMode } from '../../shared/types'
+import type { AbsPath, AppSettings, RootEntry, VimrcMode } from '../../shared/types'
 import { askConfirm, isDialogOpen } from '../lib/dialogs'
 import {
   SHORTCUT_BY_ID,
@@ -16,18 +16,19 @@ import {
   setShortcutRecording,
 } from '../lib/shortcuts'
 import type { VimSettings } from '../lib/vimrc'
+import { absPath } from '../lib/paths'
 
 type Tab = 'roots' | 'editor' | 'shortcuts' | 'about'
 
 interface Props {
   roots: RootEntry[]
   activeId: string
-  activePath: string
+  activePath: AbsPath
   settings: AppSettings
-  settingsPath: string
+  settingsPath: AbsPath
   vim: VimSettings
   onSwitch: (id: string) => Promise<void>
-  onAdd: (path: string, name?: string) => Promise<void>
+  onAdd: (path: AbsPath, name?: string) => Promise<void>
   onRemove: (id: string) => Promise<void>
   onSettingsChange: (settings: AppSettings) => void
   flushRef?: { current: (() => void) | null }
@@ -265,7 +266,7 @@ export function SettingsView({
   const add = async () => {
     if (!path.trim()) return
     await run(async () => {
-      await onAdd(path.trim(), name.trim() || undefined)
+      await onAdd(absPath(path.trim()), name.trim() || undefined)
       setPath('')
       setName('')
     })

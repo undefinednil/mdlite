@@ -1,26 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { rankFuzzy } from '../../shared/fuzzy'
-import type { GrepFile } from '../../shared/types'
+import type { GrepFile, RelPath } from '../../shared/types'
 import { api } from '../api'
-import { highlightSegments, iconFor, iconTone } from '../lib/paths'
+import { highlightSegments } from '../lib/paths'
+import { rowClassName, rowLeading, rowMoveIndex, rowView } from '../lib/row'
+import { createSelection } from '../lib/selection'
 import { matchesBinding } from '../lib/shortcuts'
+import { useSelectionSnapshot } from '../lib/useSelection'
 
 export type PaletteMode = 'files' | 'content'
 
 interface Props {
   mode: PaletteMode
-  files: string[]
+  files: RelPath[]
   onClose: () => void
-  onOpenFile: (path: string, jump?: { text: string; query: string }) => void
+  onOpenFile: (path: RelPath, jump?: { text: string; query: string }) => void
 }
 
 type Entry =
-  | { kind: 'file'; path: string; indices: number[] }
-  | { kind: 'match'; path: string; line: number; text: string }
+  | { kind: 'file'; key: string; path: RelPath; indices: number[] }
+  | { kind: 'match'; key: string; path: RelPath; line: number; text: string }
+
+function matchKey(path: RelPath, line: number, text: string): string {
+  return `match:${path}:${line}:${text}`
+}
 
 export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   const [query, setQuery] = useState('')
-  const [active, setActive] = useState(0)
   const [regex, setRegex] = useState(false)
   const [grepFiles, setGrepFiles] = useState<GrepFile[]>([])
   const [grepLoading, setGrepLoading] = useState(false)
@@ -31,6 +37,8 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   const paletteRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const skipRestoreRef = useRef(false)
+  const selection = useMemo(() => createSelection(), [])
+  const { cursor } = useSelectionSnapshot(selection)
 
   useEffect(() => {
     const previous = document.activeElement
@@ -118,10 +126,11 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   const entries = useMemo<Entry[]>(() => {
     if (mode === 'files') {
       if (!query.trim()) {
-        return files.slice(0, 80).map((path) => ({ kind: 'file' as const, path, indices: [] }))
+        return files.slice(0, 80).map((path) => ({ kind: 'file' as const, key: `file:${path}`, path, indices: [] }))
       }
       return rankFuzzy(query, files, 80).map((result) => ({
         kind: 'file' as const,
+        key: `file:${result.path}`,
         path: result.path,
         indices: result.indices,
       }))
@@ -130,22 +139,35 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
     const out: Entry[] = []
     for (const file of grepFiles) {
       for (const match of file.matches) {
-        out.push({ kind: 'match', path: file.path, line: match.line, text: match.text })
+        out.push({
+          kind: 'match',
+          key: matchKey(file.path, match.line, match.text),
+          path: file.path,
+          line: match.line,
+          text: match.text,
+        })
       }
     }
     return out
   }, [mode, query, files, grepFiles])
 
+  const entryKeys = useMemo(() => entries.map((entry) => entry.key), [entries])
+  const cursorIndex = cursor === null ? -1 : entryKeys.indexOf(cursor)
+
   useEffect(() => {
-    setActive(0)
-  }, [query, mode])
+    selection.sync(null, entryKeys)
+  }, [selection, entryKeys])
+
+  useEffect(() => {
+    selection.select(entryKeys[0] ?? null)
+  }, [selection, entryKeys])
 
   useEffect(() => {
     const container = listRef.current
     if (!container) return
-    const node = container.querySelector<HTMLElement>(`[data-index="${active}"]`)
+    const node = container.querySelector<HTMLElement>(`[data-index="${cursorIndex}"]`)
     node?.scrollIntoView({ block: 'nearest' })
-  }, [active])
+  }, [cursorIndex])
 
   const open = (entry: Entry | undefined) => {
     if (!entry) return
@@ -161,17 +183,17 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
     if (event.nativeEvent.isComposing) return
     if (event.key === 'ArrowDown' || matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
       event.preventDefault()
-      setActive((value) => Math.min(entries.length - 1, value + 1))
+      selection.move(entryKeys, rowMoveIndex('down', cursorIndex, entryKeys.length))
       return
     }
     if (event.key === 'ArrowUp' || matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
       event.preventDefault()
-      setActive((value) => Math.max(0, value - 1))
+      selection.move(entryKeys, rowMoveIndex('up', cursorIndex, entryKeys.length))
       return
     }
     if (event.key === 'Enter' && document.activeElement === inputRef.current) {
       event.preventDefault()
-      open(entries[active])
+      open(entries[cursorIndex])
     }
   }
 
@@ -216,18 +238,25 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
             entries.map((entry, index) => {
               if (entry.kind !== 'file') return null
               const segments = highlightSegments(entry.path, entry.indices)
+              const view = rowView({
+                base: 'palette-item',
+                path: entry.path,
+                type: 'file',
+                state: { active: entry.key === cursor },
+              })
+              const { icon } = rowLeading(view)
               return (
                 <div
                   key={entry.path}
                   data-index={index}
-                  className={`palette-item ${index === active ? 'active' : ''}`}
-                  onMouseMove={() => setActive(index)}
+                  className={view.className}
+                  onMouseMove={() => selection.select(entry.key)}
                   onClick={() => open(entry)}
                 >
-                  <span className={`material-symbols-rounded palette-icon ${iconTone(entry.path, 'file')}`}>
-                    {iconFor(entry.path, 'file')}
-                  </span>
-                  <span className="palette-path">
+                  {icon?.kind === 'icon' && (
+                    <span className={`material-symbols-rounded palette-icon row-icon ${icon.tone}`}>{icon.icon}</span>
+                  )}
+                  <span className="palette-path row-label">
                     {segments.map((segment, i) =>
                       segment.hit ? <b key={i}>{segment.text}</b> : <span key={i}>{segment.text}</span>,
                     )}
@@ -247,12 +276,12 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
                 if (entry.kind !== 'match') return null
                 const isFirstOfFile = index === 0 || entries[index - 1]?.path !== entry.path
                 return (
-                  <div key={`${entry.path}:${entry.line}:${index}`}>
+                  <div key={entry.key}>
                     {isFirstOfFile && <div className="palette-file">{entry.path}</div>}
                     <div
                       data-index={index}
-                      className={`palette-match ${index === active ? 'active' : ''}`}
-                      onMouseMove={() => setActive(index)}
+                      className={rowClassName('palette-match', { active: entry.key === cursor })}
+                      onMouseMove={() => selection.select(entry.key)}
                       onClick={() => open(entry)}
                     >
                       <span className="palette-line">{entry.line}</span>

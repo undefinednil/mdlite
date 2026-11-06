@@ -1,6 +1,7 @@
 import DOMPurify from 'dompurify'
 import MarkdownIt from 'markdown-it'
 import type { Highlighter } from 'shiki'
+import type { RelPath } from '../../shared/types'
 import { resolveRelative } from './paths'
 import { api } from '../api'
 
@@ -10,7 +11,7 @@ const LANGS = [
   'ts', 'tsx', 'js', 'jsx', 'json', 'jsonc', 'bash', 'sh', 'shell', 'go', 'php', 'yaml',
   'sql', 'md', 'markdown', 'python', 'html', 'css', 'scss', 'diff', 'kotlin', 'swift',
   'dockerfile', 'toml', 'ini', 'xml', 'graphql', 'protobuf', 'csharp', 'java', 'ruby',
-  'rust', 'svelte', 'vue',
+  'rust', 'svelte', 'vue', 'hcl',
 ]
 
 let highlighterPromise: Promise<Highlighter> | null = null
@@ -68,7 +69,7 @@ interface EnhanceOptions {
 
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv)$/i
 
-function rewriteResources(root: HTMLElement, filePath: string) {
+function rewriteResources(root: HTMLElement, filePath: RelPath) {
   for (const img of Array.from(root.querySelectorAll('img'))) {
     const src = img.getAttribute('src')
     if (!src) continue
@@ -100,8 +101,9 @@ function rewriteResources(root: HTMLElement, filePath: string) {
     const resolved = resolveRelative(filePath, href)
     if (!resolved) {
       if (/^https?:/i.test(href)) {
-        anchor.setAttribute('target', '_blank')
-        anchor.setAttribute('rel', 'noreferrer noopener')
+        anchor.dataset.mdUrl = href
+        anchor.removeAttribute('target')
+        anchor.removeAttribute('rel')
       }
       continue
     }
@@ -142,6 +144,78 @@ async function highlightCode(root: HTMLElement, isCancelled: () => boolean) {
   }
 }
 
+const MERMAID_ZOOM_STEP = 0.25
+const MERMAID_ZOOM_MIN = 0.25
+const MERMAID_ZOOM_MAX = 4
+
+function diagramWidth(svg: SVGSVGElement, scale: number): number {
+  const measured = svg.getBoundingClientRect().width / scale
+  if (measured > 0) return Math.round(measured)
+  const attribute = Number(svg.getAttribute('width'))
+  if (Number.isFinite(attribute) && attribute > 0) return Math.round(attribute)
+  const viewBox = svg.viewBox?.baseVal?.width ?? 0
+  return viewBox > 0 ? Math.round(viewBox) : 0
+}
+
+function zoomButton(icon: string, label: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'icon-btn'
+  button.title = label
+  button.setAttribute('aria-label', label)
+  const glyph = document.createElement('span')
+  glyph.className = 'material-symbols-rounded'
+  glyph.textContent = icon
+  button.appendChild(glyph)
+  button.addEventListener('click', onClick)
+  return button
+}
+
+export function attachMermaidZoom(host: HTMLElement) {
+  const svg = host.querySelector('svg')
+  if (!svg) return
+  const baseWidth = diagramWidth(svg, elementScale(host))
+  if (!baseWidth) return
+
+  const block = document.createElement('div')
+  block.className = 'mermaid-block'
+  host.replaceWith(block)
+  block.appendChild(host)
+
+  const controls = document.createElement('div')
+  controls.className = 'mermaid-zoom'
+  controls.setAttribute('role', 'group')
+  controls.setAttribute('aria-label', 'Diagram zoom')
+
+  const value = document.createElement('button')
+  value.type = 'button'
+  value.className = 'mermaid-zoom-value'
+  value.title = 'Reset zoom to 100%'
+  value.setAttribute('aria-label', 'Reset zoom to 100%')
+
+  let zoom = 1
+
+  const apply = () => {
+    value.textContent = `${Math.round(zoom * 100)}%`
+    svg.style.width = `${Math.round(baseWidth * zoom)}px`
+    svg.style.maxWidth = 'none'
+  }
+
+  const setZoom = (next: number) => {
+    zoom = Math.min(MERMAID_ZOOM_MAX, Math.max(MERMAID_ZOOM_MIN, next))
+    apply()
+  }
+
+  controls.append(
+    zoomButton('remove', 'Zoom out', () => setZoom(zoom - MERMAID_ZOOM_STEP)),
+    value,
+    zoomButton('add', 'Zoom in', () => setZoom(zoom + MERMAID_ZOOM_STEP)),
+  )
+  value.addEventListener('click', () => setZoom(1))
+  block.appendChild(controls)
+  apply()
+}
+
 async function renderMermaid(root: HTMLElement, isCancelled: () => boolean) {
   const blocks = Array.from(root.querySelectorAll('pre > code.language-mermaid'))
   if (!blocks.length) return
@@ -166,7 +240,9 @@ async function renderMermaid(root: HTMLElement, isCancelled: () => boolean) {
     } catch (error) {
       node.classList.add('mermaid-error')
       node.textContent = `Mermaid error: ${error instanceof Error ? error.message : String(error)}`
+      continue
     }
+    attachMermaidZoom(node)
   }
 }
 
@@ -223,6 +299,13 @@ function withImageWidth(source: string, src: string, width: number): string {
   return source.replace(pattern, (_match, open: string, close: string) => `${open}${src}${close}{width=${width}}`)
 }
 
+function elementScale(element: HTMLElement): number {
+  const layout = element.offsetWidth
+  if (!layout) return 1
+  const scale = element.getBoundingClientRect().width / layout
+  return scale > 0 ? scale : 1
+}
+
 function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (next: string) => void) {
   if (!onSourceChange) return
 
@@ -247,7 +330,7 @@ function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
       event.preventDefault()
       event.stopPropagation()
-      const current = Math.round(img.getBoundingClientRect().width)
+      const current = Math.round(img.offsetWidth)
       const step = event.key === 'ArrowRight' ? 10 : -10
       const width = Math.max(60, current + step * (event.shiftKey ? 5 : 1))
       img.style.width = `${width}px`
@@ -258,10 +341,11 @@ function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (
     handle.addEventListener('mousedown', (event) => {
       event.preventDefault()
       const startX = event.clientX
-      const startWidth = img.getBoundingClientRect().width
+      const startWidth = img.offsetWidth
+      const scale = elementScale(img)
 
       const move = (moveEvent: MouseEvent) => {
-        const width = Math.max(60, Math.round(startWidth + moveEvent.clientX - startX))
+        const width = Math.max(60, Math.round(startWidth + (moveEvent.clientX - startX) / scale))
         img.style.width = `${width}px`
         img.style.maxWidth = 'none'
       }
@@ -269,7 +353,7 @@ function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (
       const up = () => {
         window.removeEventListener('mousemove', move)
         window.removeEventListener('mouseup', up)
-        const width = Math.round(img.getBoundingClientRect().width)
+        const width = Math.round(img.offsetWidth)
         onSourceChange(withImageWidth(source, original, width))
       }
 
@@ -279,7 +363,7 @@ function attachImageResize(root: HTMLElement, source: string, onSourceChange?: (
   }
 }
 
-function attachTableResize(root: HTMLElement, filePath: string) {
+function attachTableResize(root: HTMLElement, filePath: RelPath) {
   const storageKey = `mdlite:table:${filePath}`
 
   Array.from(root.querySelectorAll('table')).forEach((table, index) => {
@@ -320,7 +404,7 @@ function attachTableResize(root: HTMLElement, filePath: string) {
         if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
         event.preventDefault()
         event.stopPropagation()
-        const current = Math.round(cell.getBoundingClientRect().width)
+        const current = Math.round(cell.offsetWidth)
         const step = event.key === 'ArrowRight' ? 10 : -10
         const width = Math.max(60, current + step * (event.shiftKey ? 5 : 1))
         cols[columnIndex]!.style.width = `${width}px`
@@ -332,10 +416,11 @@ function attachTableResize(root: HTMLElement, filePath: string) {
         event.preventDefault()
         event.stopPropagation()
         const startX = event.clientX
-        const startWidth = cell.getBoundingClientRect().width
+        const startWidth = cell.offsetWidth
+        const scale = elementScale(cell)
 
         const move = (moveEvent: MouseEvent) => {
-          const width = Math.max(60, Math.round(startWidth + moveEvent.clientX - startX))
+          const width = Math.max(60, Math.round(startWidth + (moveEvent.clientX - startX) / scale))
           cols[columnIndex]!.style.width = `${width}px`
         }
 
@@ -353,7 +438,7 @@ function attachTableResize(root: HTMLElement, filePath: string) {
   })
 }
 
-export async function enhance(root: HTMLElement, filePath: string, options: EnhanceOptions = {}) {
+export async function enhance(root: HTMLElement, filePath: RelPath, options: EnhanceOptions = {}) {
   const isCancelled = options.isCancelled ?? (() => false)
 
   rewriteResources(root, filePath)

@@ -115,6 +115,11 @@ function normalizeKeys(input: string, leader: string): string {
   })
 }
 
+function normalizeLeader(value: string): string {
+  const keys = value.replace(/\\([\\<])/g, '$1')
+  return keys === ' ' ? '<Space>' : keys
+}
+
 function stripTrailingComment(line: string): string {
   for (let i = 1; i < line.length; i++) {
     if (line[i] === '"' && /\s/.test(line[i - 1] ?? '')) return line.slice(0, i)
@@ -190,7 +195,7 @@ export function parseVimrc(text: string, source = ''): VimSettings {
       const quoted = /^(["'])(.*?)\1/.exec(rawValue)
       const value = quoted ? quoted[2] : (rawValue.split(/\s+/)[0] ?? '')
       if (value) {
-        settings.leader = value
+        settings.leader = normalizeLeader(value)
         settings.applied++
       } else {
         settings.skipped.push(trimmed)

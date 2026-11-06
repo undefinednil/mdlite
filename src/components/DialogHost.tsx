@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { RelPath } from '../../shared/types'
 import { markDialogOpen, setDialogListener, type DialogRequest, type FolderChoice } from '../lib/dialogs'
+import { rowLeading, rowMoveIndex, rowView } from '../lib/row'
 
 const NO_FOLDERS: FolderChoice[] = []
 
@@ -127,7 +129,7 @@ export function DialogHost() {
     restoreFocus()
   }, [restoreFocus])
 
-  const choose = useCallback((path: string) => {
+  const choose = useCallback((path: RelPath) => {
     setRequest((current) => {
       if (current?.kind === 'folder') current.resolve(path)
       return null
@@ -179,13 +181,13 @@ export function DialogHost() {
         if (event.key === 'ArrowDown') {
           event.preventDefault()
           event.stopPropagation()
-          setFolderIndex((index) => Math.min(filtered.length - 1, index + 1))
+          setFolderIndex((index) => rowMoveIndex('down', index, filtered.length))
           return
         }
         if (event.key === 'ArrowUp') {
           event.preventDefault()
           event.stopPropagation()
-          setFolderIndex((index) => Math.max(0, index - 1))
+          setFolderIndex((index) => rowMoveIndex('up', index, filtered.length))
           return
         }
         if (event.key === 'Enter') {
@@ -258,27 +260,42 @@ export function DialogHost() {
               {filtered.length === 0 ? (
                 <div className="folder-picker-empty">No folders match</div>
               ) : (
-                filtered.map((folder, index) => (
-                  <button
-                    key={folder.path || '/'}
-                    id={`dialog-folder-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={index === folderIndex}
-                    className={`folder-choice ${index === folderIndex ? 'active' : ''}`}
-                    style={{ paddingLeft: 12 + folder.depth * 14 }}
-                    title={folder.path || 'Root'}
-                    onMouseEnter={() => setFolderIndex(index)}
-                    onFocus={() => setFolderIndex(index)}
-                    onClick={() => choose(folder.path)}
-                  >
-                    <span className="material-symbols-rounded folder-choice-icon">
-                      {folder.path ? 'folder' : 'home'}
-                    </span>
-                    <span className="folder-choice-name">{folder.label}</span>
-                    {folder.path && <span className="folder-choice-path">{folder.path}</span>}
-                  </button>
-                ))
+                filtered.map((folder, index) => {
+                  const view = rowView({
+                    base: 'folder-choice',
+                    path: folder.path,
+                    type: 'dir',
+                    icon: folder.path ? undefined : 'home',
+                    state: { active: index === folderIndex },
+                    trailing: folder.path ? [folder.path] : [],
+                  })
+                  const { icon } = rowLeading(view)
+                  return (
+                    <button
+                      key={folder.path || '/'}
+                      id={`dialog-folder-${index}`}
+                      type="button"
+                      role="option"
+                      aria-selected={index === folderIndex}
+                      className={view.className}
+                      style={{ paddingLeft: 12 + folder.depth * 14 }}
+                      title={folder.path || 'Root'}
+                      onMouseEnter={() => setFolderIndex(index)}
+                      onFocus={() => setFolderIndex(index)}
+                      onClick={() => choose(folder.path)}
+                    >
+                      {icon?.kind === 'icon' && (
+                        <span className="material-symbols-rounded folder-choice-icon row-icon">{icon.icon}</span>
+                      )}
+                      <span className="folder-choice-name row-label">{folder.label}</span>
+                      {view.trailing.map((text) => (
+                        <span key={text} className="folder-choice-path">
+                          {text}
+                        </span>
+                      ))}
+                    </button>
+                  )
+                })
               )}
             </div>
           </>

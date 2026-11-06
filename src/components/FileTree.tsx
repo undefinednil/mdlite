@@ -1,19 +1,33 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import type { TreeNode } from '../../shared/types'
+import type { RelPath, TreeNode } from '../../shared/types'
 import { api } from '../api'
-import { ancestors, baseName, dirname, globToRegExp, iconFor, iconTone, joinPath, kindGroup, pasteDirectory, type KindGroup } from '../lib/paths'
-import { askConfirm, askFolder, askPrompt, type FolderChoice } from '../lib/dialogs'
+import { fileType, type KindGroup } from '../lib/fileType'
+import type { FileOperationResult, FileOperations } from '../lib/fileOperations'
+import {
+  ancestors,
+  baseName,
+  dirname,
+  globToRegExp,
+  pasteDirectory,
+  relPath,
+  remapPath,
+} from '../lib/paths'
+import { revealLabel } from '../lib/platform'
+import { rowActivation, rowKeyMove, rowLeading, rowMoveIndex, rowView } from '../lib/row'
+import { createSelection } from '../lib/selection'
 import { matchesBinding, matchesCommand } from '../lib/shortcuts'
+import {
+  defaultSortDirection,
+  flattenTree,
+  pruneTree,
+  type TreeRow,
+  type TreeSortKey,
+} from '../lib/tree'
+import { useFileOperationsSnapshot } from '../lib/useFileOperations'
+import { useSelectionSnapshot } from '../lib/useSelection'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 
 const ROW = 26
-
-type SortMode = 'name' | 'modified'
-
-interface Row {
-  node: TreeNode
-  depth: number
-}
 
 const KIND_LABELS: { key: KindGroup; label: string }[] = [
   { key: 'markdown', label: 'md' },
@@ -43,96 +57,41 @@ function inSizeBucket(size: number, bucket: SizeBucket): boolean {
 interface Props {
   nodes: TreeNode[]
   shortcuts: Record<string, string>
-  rootEpoch: { current: number }
-  onFlush?: () => Promise<boolean>
-  onRemapPath: (from: string, to: string) => void
-  onPathRemoved: (path: string) => void
+  operations: FileOperations
+  onRemapPath: (from: RelPath, to: RelPath) => void
+  onPathRemoved: (path: RelPath) => void
   focusRef?: { current: (() => void) | null }
-  selected: string | null
-  currentDir: string
-  expanded: Set<string>
-  onToggle: (path: string) => void
-  onSelect: (path: string, focusMain?: boolean) => void
-  onOpenDir: (path: string) => void
+  selected: RelPath | null
+  currentDir: RelPath
+  expanded: Set<RelPath>
+  onToggle: (path: RelPath) => void
+  onSelect: (path: RelPath, focusMain?: boolean) => void
+  onOpenDir: (path: RelPath) => void
   onChanged: () => void
   onError: (message: string) => void
   onCollapseAll: () => void
 }
 
-function sortNodes(nodes: TreeNode[], mode: SortMode): TreeNode[] {
-  const copy = [...nodes]
-  copy.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
-    if (mode === 'modified') return b.mtime - a.mtime || a.name.localeCompare(b.name)
-    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-  })
-  return copy
-}
-
-function collectFolders(nodes: TreeNode[]): FolderChoice[] {
-  const out: FolderChoice[] = [{ path: '', label: 'Root', depth: 0 }]
-  const walk = (list: TreeNode[], depth: number) => {
-    for (const node of list) {
-      if (node.type !== 'dir') continue
-      out.push({ path: node.path, label: baseName(node.path), depth })
-      walk(node.children ?? [], depth + 1)
-    }
-  }
-  walk(nodes, 1)
-  return out
-}
-
-function collectPaths(nodes: TreeNode[], out: Set<string> = new Set()): Set<string> {
-  for (const node of nodes) {
-    out.add(node.path)
-    if (node.children) collectPaths(node.children, out)
-  }
-  return out
-}
-
-function prune(
-  nodes: TreeNode[],
-  keep: (node: TreeNode) => boolean,
-  keepEmptyDir?: (node: TreeNode) => boolean,
-): TreeNode[] {
-  const result: TreeNode[] = []
-  for (const node of nodes) {
-    if (node.type === 'file') {
-      if (keep(node)) result.push(node)
-      continue
-    }
-    const children = prune(node.children ?? [], keep, keepEmptyDir)
-    if (children.length || keepEmptyDir?.(node)) result.push({ ...node, children })
-  }
-  return result
-}
-
-interface UndoEntry {
-  label: string
-  run: () => Promise<void>
-}
-
 interface ContextMenuState {
   x: number
   y: number
-  path: string
+  path: RelPath
   type: 'dir' | 'file'
-  targets: string[]
+  targets: RelPath[]
   focus: () => void
   external?: boolean
   background?: boolean
 }
 
 export interface FileTreeHandle {
-  openContextMenu: (path: string, type: 'dir' | 'file', x: number, y: number, focus: () => void) => void
-  openBackgroundMenu: (dir: string, x: number, y: number, focus: () => void) => void
+  openContextMenu: (path: RelPath, type: 'dir' | 'file', x: number, y: number, focus: () => void) => void
+  openBackgroundMenu: (dir: RelPath, x: number, y: number, focus: () => void) => void
 }
 
 export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   nodes,
   shortcuts,
-  rootEpoch,
-  onFlush,
+  operations,
   onRemapPath,
   onPathRemoved,
   focusRef,
@@ -148,28 +107,23 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
 }: Props, ref) {
   const [filter, setFilter] = useState('')
   const [filterMode, setFilterMode] = useState<'contains' | 'glob' | 'regex'>('contains')
-  const [sort, setSort] = useState<SortMode>('name')
+  const [sort, setSort] = useState<TreeSortKey>('name')
   const [timeFilter, setTimeFilter] = useState<'all' | '3d' | '7d' | 'custom'>('all')
   const [rangeFrom, setRangeFrom] = useState('')
   const [rangeTo, setRangeTo] = useState('')
   const [kinds, setKinds] = useState<Set<KindGroup>>(() => new Set())
   const [sizeBucket, setSizeBucket] = useState<SizeBucket>('any')
   const [showMore, setShowMore] = useState(false)
-  const [cursorPath, setCursorPath] = useState<string | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
-  const [clipboard, setClipboard] = useState<{ path: string; mode: 'cut' | 'copy' } | null>(null)
-  const [marked, setMarked] = useState<Set<string>>(() => new Set())
   const [status, setStatus] = useState('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
 
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const undoStack = useRef<UndoEntry[]>([])
-  const busyRef = useRef(false)
-  const folderChoices = useMemo(() => collectFolders(nodes), [nodes])
-  const treePaths = useMemo(() => collectPaths(nodes), [nodes])
+  const selection = useMemo(() => createSelection<RelPath>(remapPath), [])
+  const { cursor, marked } = useSelectionSnapshot(selection)
+  const { clipboard } = useFileOperationsSnapshot(operations)
 
-  const anchorRef = useRef<string | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const rows = useMemo(() => {
     const needle = filter.trim()
@@ -185,7 +139,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       timeFilter === 'custom' && rangeTo ? new Date(`${rangeTo}T23:59:59.999`).getTime() : 0
     const active = Boolean(needle) || after > 0 || before > 0 || kinds.size > 0 || sizeBucket !== 'any'
 
-    let matcher: ((path: string) => boolean) | null = null
+    let matcher: ((path: RelPath) => boolean) | null = null
     if (needle) {
       if (filterMode === 'regex') {
         try {
@@ -204,13 +158,13 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     }
 
     const source = active
-      ? prune(
+      ? pruneTree(
           nodes,
           (node) => {
             if (matcher && !matcher(node.path)) return false
             if (after && node.mtime < after) return false
             if (before && node.mtime > before) return false
-            if (kinds.size > 0 && !kinds.has(kindGroup(node.path))) return false
+            if (kinds.size > 0 && !kinds.has(fileType(node.path).group)) return false
             if (!inSizeBucket(node.size, sizeBucket)) return false
             return true
           },
@@ -218,32 +172,18 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
         )
       : nodes
 
-    const out: Row[] = []
-    const walk = (list: TreeNode[], depth: number) => {
-      for (const node of sortNodes(list, sort)) {
-        out.push({ node, depth })
-        if (node.type === 'dir' && node.children) {
-          const isOpen = active || expanded.has(node.path)
-          if (isOpen) walk(node.children, depth + 1)
-        }
-      }
-    }
-    walk(source, 0)
-    return out
+    return flattenTree(
+      source,
+      { key: sort, direction: defaultSortDirection(sort) },
+      (node) => active || expanded.has(node.path),
+    )
   }, [nodes, filter, filterMode, sort, timeFilter, rangeFrom, rangeTo, kinds, sizeBucket, expanded])
 
+  const visiblePaths = useMemo(() => rows.map((row) => row.node.path), [rows])
+
   useEffect(() => {
-    setMarked((prev) => {
-      const visible = new Set(rows.map((row) => row.node.path))
-      let changed = false
-      const next = new Set<string>()
-      for (const path of prev) {
-        if (visible.has(path)) next.add(path)
-        else changed = true
-      }
-      return changed ? next : prev
-    })
-  }, [rows])
+    selection.sync(selected, visiblePaths)
+  }, [selection, selected, visiblePaths])
 
   const activeFilterCount =
     (filter.trim() ? 1 : 0) + (timeFilter !== 'all' ? 1 : 0) + kinds.size + (sizeBucket !== 'any' ? 1 : 0)
@@ -296,6 +236,15 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   }, [selected, rows])
 
   useEffect(() => {
+    const index = cursor === null ? -1 : rows.findIndex((row) => row.node.path === cursor)
+    const el = scrollRef.current
+    if (index === -1 || !el) return
+    const top = index * ROW
+    if (top < el.scrollTop) el.scrollTop = top
+    else if (top + ROW > el.scrollTop + el.clientHeight) el.scrollTop = top - el.clientHeight + ROW
+  }, [cursor, rows])
+
+  useEffect(() => {
     setContextMenu(null)
   }, [rows])
 
@@ -312,324 +261,140 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   const end = Math.min(rows.length, Math.ceil((scrollTop + viewportHeight) / ROW) + 10)
   const visible = rows.slice(start, end)
 
-  const cursor = cursorPath ? rows.findIndex((row) => row.node.path === cursorPath) : -1
-  const activeRow = cursor >= 0 ? rows[cursor] : undefined
+  const cursorIndex = cursor === null ? -1 : rows.findIndex((row) => row.node.path === cursor)
+  const activeRow = cursorIndex >= 0 ? rows[cursorIndex] : undefined
 
-  const activate = (row: Row | undefined) => {
+  const activate = (row: TreeRow | undefined) => {
     if (!row) return
-    if (row.node.type === 'dir') onOpenDir(row.node.path)
+    if (rowActivation(row.node.type) === 'open-dir') onOpenDir(row.node.path)
     else onSelect(row.node.path)
   }
 
-  const moveCursor = (next: number) => {
-    if (!rows.length) return
-    const clamped = Math.max(0, Math.min(rows.length - 1, next))
-    setCursorPath(rows[clamped]?.node.path ?? null)
-    anchorRef.current = rows[clamped]?.node.path ?? null
-    const el = scrollRef.current
-    if (el) {
-      const top = clamped * ROW
-      if (top < el.scrollTop) el.scrollTop = top
-      else if (top + ROW > el.scrollTop + el.clientHeight) el.scrollTop = top - el.clientHeight + ROW
-    }
-  }
-
-  const extendCursor = (next: number) => {
-    if (!rows.length) return
-    const clamped = Math.max(0, Math.min(rows.length - 1, next))
-    const anchor = anchorRef.current ?? cursorPath ?? rows[clamped]?.node.path ?? null
-    const from = rows.findIndex((row) => row.node.path === anchor)
-    moveCursor(clamped)
-    anchorRef.current = anchor
-    if (from < 0) return
-    const [lo, hi] = from < clamped ? [from, clamped] : [clamped, from]
-    setMarked(new Set(rows.slice(lo, hi + 1).map((row) => row.node.path)))
-  }
-
-  const handleRowClick = (row: Row, event: React.MouseEvent) => {
+  const handleRowClick = (row: TreeRow, event: React.MouseEvent) => {
     scrollRef.current?.focus()
-    setCursorPath(row.node.path)
+    const index = rows.findIndex((item) => item.node.path === row.node.path)
     if (event.shiftKey) {
-      const anchor = anchorRef.current ?? row.node.path
-      const from = rows.findIndex((item) => item.node.path === anchor)
-      const to = rows.findIndex((item) => item.node.path === row.node.path)
-      if (from >= 0 && to >= 0) {
-        const [lo, hi] = from < to ? [from, to] : [to, from]
-        setMarked(new Set(rows.slice(lo, hi + 1).map((item) => item.node.path)))
-      } else {
-        setMarked(new Set([row.node.path]))
-      }
+      selection.extend(visiblePaths, index)
       return
     }
     if (event.metaKey || event.ctrlKey) {
-      setMarked((prev) => {
-        const next = new Set(prev)
-        if (next.has(row.node.path)) next.delete(row.node.path)
-        else next.add(row.node.path)
-        return next
-      })
-      anchorRef.current = row.node.path
+      selection.toggle(row.node.path)
       return
     }
-    if (marked.size) setMarked(new Set())
-    anchorRef.current = row.node.path
-    if (row.node.type === 'dir') onOpenDir(row.node.path)
+    selection.select(row.node.path)
+    if (rowActivation(row.node.type) === 'open-dir') onOpenDir(row.node.path)
     else onSelect(row.node.path)
   }
 
   const targetDir = (
-    path = activeRow?.node.path ?? null,
-    type = activeRow?.node.type ?? null,
+    path: RelPath | null = activeRow?.node.path ?? null,
+    type: 'dir' | 'file' | null = activeRow?.node.type ?? null,
   ) => pasteDirectory(path, type, currentDir)
 
-  const run = async (action: () => Promise<void>, message: string) => {
-    if (busyRef.current) return
-    busyRef.current = true
-    try {
-      await action()
-      setStatus(message)
-      onChanged()
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
-    } finally {
-      busyRef.current = false
-    }
+  const remapSelection = (from: RelPath, to: RelPath) => {
+    selection.remap(from, to)
+    onRemapPath(from, to)
   }
 
-  const newEntry = async (dir: string) => {
-    const name = await askPrompt('New file name (end with / for a folder)')
-    if (!name) return
-    const isDir = name.endsWith('/')
-    const clean = name.replace(/\/+$/, '')
-    if (!clean) return
-    const path = joinPath(dir, clean)
-    void run(async () => {
-      await api.create(path, isDir ? 'dir' : 'file')
-      undoStack.current.push({
-        label: `create ${path}`,
-        run: async () => {
-          await api.trash(path)
-          onPathRemoved(path)
-        },
-      })
-      setCursorPath(path)
-      if (!isDir) onSelect(path, false)
-      else onOpenDir(dir)
-    }, `created ${path}`)
+  const removeSelection = (path: RelPath) => {
+    selection.remove(path)
+    onPathRemoved(path)
+  }
+
+  const applyResult = (result: FileOperationResult) => {
+    for (const change of result.changes) {
+      if (change.from && change.to) remapSelection(change.from, change.to)
+      else if (change.from && !change.to) removeSelection(change.from)
+    }
+    if (result.changes.length || result.failed.length) onChanged()
+    if (result.status) setStatus(result.status)
+    if (result.error) onError(result.error.message)
+  }
+
+  const newEntry = async (dir: RelPath) => {
+    const result = await operations.create(dir)
+    applyResult(result)
+    const created = result.changes[0]?.to
+    if (!created) return
+    selection.focus(created)
+    if (result.createdKind === 'file') onSelect(created, false)
+    else if (result.createdKind === 'dir') onOpenDir(dir)
   }
 
   const newFile = async () => newEntry(targetDir())
 
   const rename = async (path = activeRow?.node.path) => {
     if (!path) return
-    const from = path
-    const next = await askPrompt('Rename to', baseName(from))
-    if (!next || next === baseName(from)) return
-    if (onFlush && !(await onFlush())) return
-    void run(async () => {
-      const result = await api.rename(from, next)
-      onRemapPath(from, result.path)
-      undoStack.current.push({
-        label: `rename ${from}`,
-        run: async () => {
-          await api.rename(result.path, baseName(from))
-          onRemapPath(result.path, from)
-        },
-      })
-      setCursorPath(result.path)
-    }, `renamed ${from}`)
+    const result = await operations.rename(path)
+    applyResult(result)
+    const renamed = result.changes[0]?.to
+    if (renamed) selection.focus(renamed)
   }
 
-  const collapseTargets = (paths: string[]) =>
+  const collapseTargets = (paths: RelPath[]) =>
     paths.filter((path) => !paths.some((other) => other !== path && path.startsWith(`${other}/`)))
 
-  const actionTargets = (path?: string) => {
+  const actionTargets = (path?: RelPath) => {
     if (path) return marked.has(path) ? collapseTargets([...marked]) : [path]
     if (marked.size) return collapseTargets([...marked])
     return activeRow ? [activeRow.node.path] : []
   }
 
-  const trashTargets = async (targets: string[]) => {
+  const trashTargets = async (targets: RelPath[]) => {
     if (!targets.length) return
-    const names = targets.map((path) => baseName(path))
-    const label =
-      targets.length === 1
-        ? `"${targets[0]}"`
-        : `${targets.length} items (${names.slice(0, 5).join(', ')}${names.length > 5 ? ', …' : ''})`
-    const epoch = rootEpoch.current
-    if (!(await askConfirm(`Move ${label} to trash?`))) return
-    if (onFlush && !(await onFlush())) return
-    if (rootEpoch.current !== epoch) return
-    void run(async () => {
-      const results: { trashed: string; original: string }[] = []
-      try {
-        for (const path of targets) {
-          const result = await api.trash(path)
-          results.push({ trashed: result.path, original: path })
-        }
-      } catch (error) {
-        const failed: string[] = []
-        for (const entry of [...results].reverse()) {
-          try {
-            await api.restore(entry.trashed, entry.original)
-          } catch {
-            failed.push(entry.original)
-          }
-        }
-        onChanged()
-        const message = error instanceof Error ? error.message : String(error)
-        if (failed.length) {
-          throw new Error(`${message}; could not restore: ${failed.join(', ')}`)
-        }
-        throw error
-      }
-      undoStack.current.push({
-        label: `trash ${label}`,
-        run: async () => {
-          for (const entry of [...results].reverse()) await api.restore(entry.trashed, entry.original)
-          setCursorPath(dirname(results[0].original) || null)
-        },
-      })
-      setMarked(new Set())
-      setCursorPath(dirname(targets[0]) || null)
-      const hit = targets.find((path) => path === selected || (selected ?? '').startsWith(`${path}/`))
-      if (hit) {
-        onOpenDir(dirname(hit))
-      } else {
-        const open = targets.find(
-          (path) => currentDir === path || currentDir.startsWith(`${path}/`),
-        )
-        if (open) onPathRemoved(open)
-      }
-    }, `trashed ${label}`)
+    const result = await operations.trash(targets)
+    applyResult(result)
+    if (result.error || !result.changes.length) return
+    selection.clear()
+    selection.select(dirname(targets[0]) || null)
+    const hit = targets.find((path) => path === selected || (selected ?? '').startsWith(`${path}/`))
+    if (hit) onOpenDir(dirname(hit))
   }
 
-  const trash = async (path?: string) => trashTargets(actionTargets(path))
+  const trash = async (path?: RelPath) => trashTargets(actionTargets(path))
 
-  const moveTargets = async (targets: string[]) => {
+  const moveTargets = async (targets: RelPath[]) => {
     if (!targets.length) return
-
-    const blocked = (path: string) =>
-      targets.some((target) => path === target || path.startsWith(`${target}/`))
-    const choices = folderChoices.filter((folder) => !blocked(folder.path))
-    const destination = await askFolder(
-      targets.length === 1 ? `Move "${targets[0]}" to…` : `Move ${targets.length} items to…`,
-      choices,
-      dirname(targets[0]),
-    )
-    if (destination === null) return
-
-    const moves = targets
-      .map((from) => ({ from, to: joinPath(destination, baseName(from)) }))
-      .filter((item) => item.to !== item.from)
-    if (!moves.length) {
-      setStatus('already in that folder')
-      return
-    }
-    const duplicate = moves.find(
-      (item, index) => moves.findIndex((other) => other.to === item.to) !== index,
-    )
-    if (duplicate) {
-      onError(`two items would use the same name: ${baseName(duplicate.from)}`)
-      return
-    }
-    const clash = moves.find((item) => treePaths.has(item.to))
-    if (clash) {
-      onError(`target already exists: ${clash.to}`)
-      return
-    }
-    if (onFlush && !(await onFlush())) return
-
-    void run(async () => {
-      const done: { from: string; to: string }[] = []
-      try {
-        for (const item of moves) {
-          await api.transfer(item.from, item.to, false)
-          done.push(item)
-          onRemapPath(item.from, item.to)
-        }
-      } catch (error) {
-        for (const item of [...done].reverse()) {
-          try {
-            await api.transfer(item.to, item.from, false)
-            onRemapPath(item.to, item.from)
-          } catch {}
-        }
-        onChanged()
-        throw error
+    const result = await operations.move(targets)
+    applyResult(result)
+    const first = result.changes[0]
+    if (!first?.to) return
+    selection.clear()
+    selection.select(first.to)
+    const destination = dirname(first.to)
+    if (destination) {
+      for (const path of [...ancestors(destination), destination]) {
+        if (!expanded.has(path)) onToggle(path)
       }
-
-      undoStack.current.push({
-        label: `move ${moves.map((item) => baseName(item.from)).join(', ')}`,
-        run: async () => {
-          for (const item of [...moves].reverse()) {
-            await api.transfer(item.to, item.from, false)
-            onRemapPath(item.to, item.from)
-          }
-        },
-      })
-      setMarked(new Set())
-      setCursorPath(moves[0].to)
-      if (destination) {
-        for (const path of [...ancestors(destination), destination]) {
-          if (!expanded.has(path)) onToggle(path)
-        }
-      }
-
-    }, `moved ${moves.length === 1 ? baseName(moves[0].from) : `${moves.length} items`} to ${
-      destination || 'root'
-    }`)
+    }
   }
 
-  const move = async (path?: string) => moveTargets(actionTargets(path))
+  const move = async (path?: RelPath) => moveTargets(actionTargets(path))
 
   const cut = () => {
     if (!activeRow) return
-    setClipboard({ path: activeRow.node.path, mode: 'cut' })
-    setStatus(`cut ${activeRow.node.path}`)
+    const result = operations.cut(activeRow.node.path)
+    if (result.status) setStatus(result.status)
   }
 
-  const copy = (path = activeRow?.node.path) => {
+  const copy = (path: RelPath | undefined = activeRow?.node.path) => {
     if (!path) return
-    setClipboard({ path, mode: 'copy' })
-    setStatus(`copied ${path}`)
+    const result = operations.copy(path)
+    if (result.status) setStatus(result.status)
   }
 
   const paste = async (
-    path = activeRow?.node.path ?? null,
-    type = activeRow?.node.type ?? null,
+    path: RelPath | null = activeRow?.node.path ?? null,
+    type: 'dir' | 'file' | null = activeRow?.node.type ?? null,
   ) => {
     if (!clipboard) return
-    const dir = targetDir(path, type)
-    const name = baseName(clipboard.path)
-    const to = joinPath(dir, name)
-    if (to === clipboard.path || to.startsWith(`${clipboard.path}/`)) {
-      onError('cannot paste an item into itself')
-      return
-    }
-    const mode = clipboard.mode
-    if (onFlush && !(await onFlush())) return
-    void run(async () => {
-      await api.transfer(clipboard.path, to, mode === 'copy')
-      if (mode === 'cut') onRemapPath(clipboard.path, to)
-      undoStack.current.push({
-        label: `paste ${to}`,
-        run: async () => {
-          if (mode === 'cut') {
-            await api.transfer(to, clipboard.path, false)
-            onRemapPath(to, clipboard.path)
-          } else {
-            await api.trash(to)
-            onPathRemoved(to)
-          }
-        },
-      })
-      if (mode === 'cut') setClipboard(null)
-      setCursorPath(to)
-    }, `pasted into ${dir || 'root'}`)
+    const result = await operations.paste(targetDir(path, type))
+    applyResult(result)
+    const pasted = result.changes[0]?.to
+    if (pasted) selection.focus(pasted)
   }
 
-  const copyPath = async (path: string) => {
+  const copyPath = async (path: RelPath) => {
     const absolute = api.absolutePath(path)
     try {
       await navigator.clipboard.writeText(absolute)
@@ -639,13 +404,20 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     }
   }
 
-  const openRowContextMenu = (row: Row, event: React.MouseEvent) => {
+  const reveal = async (path: RelPath) => {
+    try {
+      await api.reveal(path)
+    } catch {
+      onError('Could not show this file in the file manager')
+    }
+  }
+
+  const openRowContextMenu = (row: TreeRow, event: React.MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
     scrollRef.current?.focus()
-    setCursorPath(row.node.path)
-    anchorRef.current = row.node.path
-    if (!marked.has(row.node.path)) setMarked(new Set())
+    selection.focus(row.node.path)
+    if (!marked.has(row.node.path)) selection.clear()
     const targets = marked.has(row.node.path) ? collapseTargets([...marked]) : [row.node.path]
     setContextMenu({
       x: event.clientX,
@@ -673,17 +445,17 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   }
 
   const undo = async () => {
-    if (busyRef.current) return
-    const entry = undoStack.current[undoStack.current.length - 1]
-    if (!entry) {
-      setStatus('nothing to undo')
-      return
-    }
-    if (onFlush && !(await onFlush())) return
-    void run(async () => {
-      await entry.run()
-      if (undoStack.current[undoStack.current.length - 1] === entry) undoStack.current.pop()
-    }, `undid ${entry.label}`)
+    const result = await operations.undo()
+    applyResult(result)
+    if (result.error) return
+    const restored = [...result.changes].reverse().find((change) => change.from === null && change.to)
+    if (restored?.to) selection.select(dirname(restored.to) || null)
+  }
+
+  const moveCursor = (move: Parameters<typeof rowMoveIndex>[0], extend: boolean) => {
+    const index = rowMoveIndex(move, cursorIndex, visiblePaths.length)
+    if (extend) selection.extend(visiblePaths, index)
+    else selection.move(visiblePaths, index)
   }
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -692,27 +464,30 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       return
     }
 
-    if (key === 'ArrowDown' || matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
+    const keyMove = rowKeyMove(key, event.shiftKey)
+    if (keyMove) {
       event.preventDefault()
-      if (event.shiftKey) extendCursor(cursor + 1)
-      else moveCursor(cursor + 1)
+      moveCursor(keyMove.move, keyMove.extend)
       return
     }
-    if (key === 'ArrowUp' || matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
+    if (matchesBinding('mod+n', event) || matchesBinding('ctrl+n', event)) {
       event.preventDefault()
-      if (event.shiftKey) extendCursor(cursor - 1)
-      else moveCursor(cursor - 1)
+      moveCursor('down', event.shiftKey)
+      return
+    }
+    if (matchesBinding('mod+p', event) || matchesBinding('ctrl+p', event)) {
+      event.preventDefault()
+      moveCursor('up', event.shiftKey)
       return
     }
     if (key === 'Escape' && marked.size) {
       event.preventDefault()
-      setMarked(new Set())
-      anchorRef.current = cursorPath
+      selection.clear()
       return
     }
     if (matchesBinding('mod+a', event) || matchesBinding('ctrl+a', event)) {
       event.preventDefault()
-      setMarked(new Set(rows.map((row) => row.node.path)))
+      selection.selectAll(visiblePaths)
       return
     }
     if (key === 'Enter') {
@@ -741,7 +516,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       if (activeRow) {
         const parent = dirname(activeRow.node.path)
         const index = rows.findIndex((row) => row.node.path === parent)
-        if (index >= 0) moveCursor(index)
+        if (index >= 0) selection.move(visiblePaths, index)
         else onOpenDir(parent)
       }
       return
@@ -757,14 +532,12 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
 
     if (shortcut('tree.down')) {
       event.preventDefault()
-      if (event.shiftKey) extendCursor(cursor + 1)
-      else moveCursor(cursor + 1)
+      moveCursor('down', event.shiftKey)
       return
     }
     if (shortcut('tree.up')) {
       event.preventDefault()
-      if (event.shiftKey) extendCursor(cursor - 1)
-      else moveCursor(cursor - 1)
+      moveCursor('up', event.shiftKey)
       return
     }
     if (shortcut('tree.expand')) {
@@ -782,19 +555,19 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       } else if (activeRow) {
         const parent = dirname(activeRow.node.path)
         const index = rows.findIndex((row) => row.node.path === parent)
-        if (index >= 0) moveCursor(index)
+        if (index >= 0) selection.move(visiblePaths, index)
         else onOpenDir(parent)
       }
       return
     }
     if (shortcut('tree.top')) {
       event.preventDefault()
-      moveCursor(0)
+      moveCursor('home', false)
       return
     }
     if (shortcut('tree.bottom')) {
       event.preventDefault()
-      moveCursor(rows.length - 1)
+      moveCursor('end', false)
       return
     }
     if (shortcut('tree.newFile')) {
@@ -862,7 +635,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
             label: 'New file',
             icon: 'note_add',
             action: () => {
-              const dir = pasteDirectory(menuTarget.path, menuTarget.type, '')
+              const dir = pasteDirectory(menuTarget.path, menuTarget.type, relPath(''))
               void newEntry(dir)
             },
           },
@@ -883,6 +656,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
             action: () => void trashTargets(menuTarget.targets),
           },
           { key: 'move', label: 'Move', icon: 'drive_file_move', action: () => void moveTargets(menuTarget.targets) },
+          { key: 'reveal', label: revealLabel(), icon: 'open_in_new', action: () => void reveal(menuTarget.path) },
           {
             key: 'copyPath',
             label: 'Copy path',
@@ -919,7 +693,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
           <select
             className="tree-sort"
             value={sort}
-            onChange={(event) => setSort(event.target.value as SortMode)}
+            onChange={(event) => setSort(event.target.value as TreeSortKey)}
             title="Sort"
           >
             <option value="name">Name</option>
@@ -1019,21 +793,11 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        onFocus={(event) => {
-          if (event.target !== event.currentTarget) return
-          if (cursorPath && rows.some((row) => row.node.path === cursorPath)) return
-          const next =
-            selected && rows.some((row) => row.node.path === selected)
-              ? selected
-              : (rows[0]?.node.path ?? null)
-          setCursorPath(next)
-          anchorRef.current = next
-        }}
         onContextMenu={(event) => {
           if ((event.target as HTMLElement).closest('.tree-row')) return
           event.preventDefault()
           scrollRef.current?.focus()
-          setMarked(new Set())
+          selection.clear()
           setContextMenu({
             x: event.clientX,
             y: event.clientY,
@@ -1063,21 +827,33 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                   timeFilter !== 'all' ||
                   kinds.size > 0 ||
                   sizeBucket !== 'any')
-              const isActive = cursorPath === row.node.path
+              const isActive = cursor === row.node.path
               const isSelected = selected === row.node.path
               const isMarked = marked.has(row.node.path)
               const isCurrentDir = isDir && currentDir === row.node.path
               const isCut = clipboard?.mode === 'cut' && clipboard.path === row.node.path
               const isContext = !contextMenu?.external && contextMenu?.path === row.node.path
+              const view = rowView({
+                base: 'tree-row',
+                path: row.node.path,
+                type: row.node.type,
+                twisty: isDir,
+                expanded: isOpen,
+                state: {
+                  selected: isSelected,
+                  active: isActive,
+                  marked: isMarked,
+                  currentDir: isCurrentDir,
+                  cut: isCut,
+                  context: isContext,
+                },
+              })
+              const { twisty, icon } = rowLeading(view)
 
               return (
                 <div
                   key={row.node.path}
-                  className={`tree-row ${isSelected ? 'selected' : ''} ${isActive ? 'active' : ''} ${
-                    isMarked ? 'marked' : ''
-                  } ${isCurrentDir ? 'current-dir' : ''} ${isCut ? 'cut' : ''} ${
-                    isContext ? 'context' : ''
-                  }`}
+                  className={view.className}
                   style={{
                     position: 'absolute',
                     top: index * ROW,
@@ -1090,7 +866,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                   onContextMenu={(event) => openRowContextMenu(row, event)}
                   title={row.node.path}
                 >
-                  {isDir ? (
+                  {twisty ? (
                     <button
                       type="button"
                       className="tree-twisty"
@@ -1100,17 +876,17 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                         scrollRef.current?.focus()
                         onToggle(row.node.path)
                       }}
-                      title={isOpen ? 'Collapse' : 'Expand'}
+                      title={twisty.open ? 'Collapse' : 'Expand'}
                     >
-                      <span className="material-symbols-rounded">{isOpen ? 'expand_more' : 'chevron_right'}</span>
+                      <span className="material-symbols-rounded">{twisty.open ? 'expand_more' : 'chevron_right'}</span>
                     </button>
                   ) : (
                     <span className="tree-twisty" />
                   )}
-                  <span className={`material-symbols-rounded tree-icon ${iconTone(row.node.path, row.node.type)}`}>
-                    {iconFor(row.node.path, row.node.type, isOpen)}
-                  </span>
-                  <span className={`tree-name ${isDir ? 'dir' : ''}`}>{baseName(row.node.path)}</span>
+                  {icon && (
+                    <span className={`material-symbols-rounded tree-icon row-icon ${icon.tone}`}>{icon.icon}</span>
+                  )}
+                  <span className={`tree-name row-label ${isDir ? 'dir' : ''}`}>{baseName(row.node.path)}</span>
                 </div>
               )
             })}
