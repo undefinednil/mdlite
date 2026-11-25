@@ -220,6 +220,16 @@ test('moves every target into the chosen folder and undoes each move', async () 
   ])
 })
 
+test('moves to an explicit destination without opening the folder dialog', async () => {
+  const h = setup({ files: { 'notes/a.md': '' }, dirs: ['notes', 'archive'] })
+
+  const moved = await h.operations.move([relPath('notes/a.md')], relPath('archive'))
+
+  assert.equal(h.dialogs.folderAsks.length, 0)
+  assert.deepEqual(moved.changes, [{ from: 'notes/a.md', to: 'archive/a.md' }])
+  assert.equal(moved.status, 'moved a.md to archive')
+})
+
 test('rolls completed moves back in reverse order when one step fails', async () => {
   const h = setup({ files: { 'notes/a.md': '', 'notes/b.md': '' }, dirs: ['notes', 'archive'] })
   h.dialogs.setFolder(relPath('archive'))

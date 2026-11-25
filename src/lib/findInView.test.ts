@@ -16,7 +16,7 @@ for (const [key, value] of Object.entries(globals)) {
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value })
 }
 
-const { activateFindHit, clearFindHits, markFindHits } = await import('./findInView')
+const { activateFindHit, clearFindHits, findCaseSensitive, markFindHits } = await import('./findInView')
 
 function root(html: string): HTMLElement {
   const element = document.createElement('div')
@@ -48,8 +48,21 @@ test('find clears old marks before marking again', () => {
   assert.equal(element.textContent, 'one two one')
 })
 
-test('find skips diagrams, scripts and other marks', () => {
-  const element = root(
+test('smart case is exact when the query has an upper-case letter', () => {
+  assert.equal(findCaseSensitive('alpha', true, true), false)
+  assert.equal(findCaseSensitive('Alpha', true, true), true)
+  assert.equal(findCaseSensitive('Alpha', false, true), true)
+  assert.equal(findCaseSensitive('Alpha', true, false), false)
+})
+
+test('a case-sensitive search marks only exact matches', () => {
+  const element = root('<p>Alpha and alpha</p><p>ALPHA</p>')
+  const hits = markFindHits(element, 'Alpha', true)
+  assert.equal(hits.length, 1)
+  assert.equal(hits[0]?.textContent, 'Alpha')
+})
+
+test('find skips diagrams, scripts and other marks', () => {  const element = root(
     '<div class="mermaid">alpha</div><script>alpha</script><p><mark>alpha</mark></p><p>alpha</p>',
   )
   const hits = markFindHits(element, 'alpha')

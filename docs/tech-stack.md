@@ -37,8 +37,9 @@ The versions below are the ranges declared in `package.json` and `src-tauri/Carg
 
 - **React and TypeScript.** One `App` owns the open file, tree, roots, editor mode and keyboard handling. Components are plain function components with props; there is no global state library.
 - **Vite.** Development mode serves the UI on port 5173 and Tauri loads that URL. Release builds write static files to `dist/`, which Tauri embeds.
-- **CodeMirror 6.** Language support is split into small packages and loaded on demand per file extension. The editor is created once and reused across files. It is rebuilt when the vimrc source, the Vim switch, word wrap or the file's language extension changes; typing never recreates the view. The React key is the vimrc source plus the Vim switch.
-- **Vim boundary.** `@replit/codemirror-vim` and its core engine are pinned to exact versions. Every patch to the engine lives in `src/lib/vim.ts` (`:w`, registers, clipboard, mappings) and `src/lib/vimScroll.ts` (character coordinates); `Editor.tsx` only calls `attachVim(view, onSave)`. The packaged e2e covers the `+` register paste, `:w` and the editor scroll keys.
+- **CodeMirror 6.** Language support is split into small packages and loaded on demand per file extension. The editor is created once and reused across files. The gutter, indentation and wrap are swapped through `Compartment`s, so changing them keeps undo history. The view is rebuilt only when the file's language extension changes or Vim is toggled; typing never recreates it.
+- **Vim boundary.** `@replit/codemirror-vim` and its core engine are pinned to exact versions. Every patch to the engine lives in `src/lib/vim.ts` (`:w`, registers, clipboard, engine options) and `src/lib/vimScroll.ts` (character coordinates); `src/lib/vimConfig.ts` derives the settings the editor reads from the app config, `src/lib/vimKeys.ts` normalizes the remap table, and `src/lib/vimKeymap.ts` owns the key conversion and prefix decision while `editorKeys.ts` keeps one buffer per view; `Editor.tsx` only calls `attachVim(view, onSave)`. The packaged e2e covers the `+` register paste, `:w` and the editor scroll keys.
+- **HTML preview.** `.html` and `.htm` open in a sandboxed iframe inside the main area. The app reads the saved source, adds a `<base>` for the asset directory and a small bridge, and renders it with `srcdoc` under an opaque origin, so relative CSS and classic scripts load but the page cannot read other files or reach Tauri. ES modules, `fetch` and storage are not available. The bridge forwards `j`, `k`, `gg`, `G` and the app's shortcuts, and reports the scroll ratio back for the recent-file memory. The preview takes focus so the page's own keys work.
 - **markdown-it.** Renders Markdown with raw HTML enabled, automatic links and line breaks. The HTML then passes through DOMPurify. A post-processing step adds Shiki highlighting and Mermaid rendering with strict security.
 - **Shiki.** Uses the `github-light` theme so rendered code matches the app's light interface.
 - **Mermaid.** Loaded only when a document contains a `mermaid` code block.
@@ -57,7 +58,7 @@ The Rust side exposes 21 commands. Most filesystem work runs as async commands o
 - Media upload validation and storage.
 - Content search with `rg` when available and a built-in fallback.
 - Recursive watching with debounce.
-- Resolving the vimrc from `~/.vimrc`, a custom path or pasted settings text.
+- Typed Vim settings in the app config: leader, clipboard targets, line numbers, indentation, search and remaps.
 - Opening a file in the operating system's default app and saving a temporary file wherever the user chooses.
 
 The heavy dependencies are deliberate: `notify` gives one watcher across macOS and Windows, `walkdir` keeps the fallback search simple, and `regex` validates and runs patterns without spawning another process. `serde` keeps the IPC payloads typed on both sides.

@@ -164,14 +164,13 @@ test('file operations keep their names and argument keys', async () => {
   })
 })
 
-test('search, settings and vimrc keep their names and argument keys', async () => {
+test('search and settings keep their names and argument keys', async () => {
   const settings = { ...defaultAppSettings }
   const response = { settings, path: '/fake/mdlite.json' }
   const { client, calls } = createRecordingClient({
     search_grep: { files: [], truncated: false, tookMs: 0 },
     settings_get: response,
     settings_set: response,
-    vimrc: { path: '~/.vimrc', exists: false, content: '' },
   })
   const api = createDesktopApi(client)
 
@@ -192,9 +191,6 @@ test('search, settings and vimrc keep their names and argument keys', async () =
 
   assert.deepEqual(await api.saveSettings(settings), response)
   assert.deepEqual(calls[3], { command: 'settings_set', args: { settings } })
-
-  assert.deepEqual(await api.vimrc(), { path: '~/.vimrc', exists: false, content: '' })
-  assert.equal(calls[4]?.command, 'vimrc')
 })
 
 test('open and asset URLs resolve against the active root', async () => {

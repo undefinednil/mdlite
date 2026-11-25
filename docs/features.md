@@ -7,7 +7,7 @@ mdlite works with one active folder of notes at a time. You can keep several fol
 ## Browsing
 
 - **Folder view.** The main area lists the current folder in a table with Name, Kind, Size and Modified columns. Name, Size and Modified sort when you click their headers; click again to reverse. Name starts A–Z, Size starts smallest first and Modified starts newest first, the same order as the tree. Kind is a label only. Breadcrumbs above the table move back up the folder path. Click a folder to enter it; `j` and `k` move the cursor and Enter opens the row. The cursor starts on the first row when a folder opens.
-- **Sidebar tree.** The whole active folder is loaded once and filtered in the app, so typing in the filter is instant. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list. Rows show the same per-kind icon as the folder table.
+- **Sidebar tree.** The whole active folder is loaded once and filtered in the app, so typing in the filter is instant. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list. `Ctrl+←` folds every folder even while a filter is active. Rows show the same per-kind icon as the folder table.
 - **Tree filters.** Filter by path text in `contains`, `glob` or `regex` mode. Add a modified-date range, kind chips (`md`, `code`, `data`, `image`, `draw`, `other`) and size buckets. Sort by name or modified time; folders stay first and the folder table uses the same order.
 - **Selection.** Shift-click selects a range of tree rows, `⌘`-click or `Ctrl`-click toggles one row, and a plain click clears the selection and opens the row. `⌘A`/`Ctrl+A` selects every visible row and `Esc` clears it. With several rows selected, `d` moves all of them to the trash. The tree, folder table and command palette share one selection model: the tree cursor follows the open file, and a rename or move carries the cursor and selection to the new path. The folder picker in Move keeps its own active row because it lists folders, not notes.
 - **Hidden and ignored items.** Any name that starts with a dot is hidden, along with `.git`, `node_modules`, `.obsidian`, `.trash`, `.cache`, `dist` and `.mdlite-trash`. Symlinks are not followed.
@@ -20,11 +20,14 @@ mdlite works with one active folder of notes at a time. You can keep several fol
 | Text and code | CodeMirror editor with syntax highlighting |
 | Images | Image view |
 | SVG | Image view; switch to the editor to change the markup |
+| HTML (`.html`, `.htm`) | Sandboxed browser preview; switch to the editor to change the markup |
 | Excalidraw | Full Excalidraw canvas, always editable |
 | No extension | Text when the content is valid UTF-8 without NUL bytes; otherwise the binary card |
 | Anything else | A card with an **Open with default app** button |
 
-SVG and Excalidraw files are read as text, so they share the 8 MiB text-read limit. Raster images are not read into the editor and do not hit that limit.
+SVG, HTML and Excalidraw files are read as text for the editor, so they share the 8 MiB text-read limit. Raster images are not read into the editor and do not hit that limit.
+
+HTML opens in a sandboxed iframe with an opaque origin. It fills the main area regardless of the width setting. Relative CSS and classic scripts load; ES modules, `fetch` and storage do not. The preview takes focus when it opens, so the page's own keyboard actions work; the app's shortcuts are forwarded from the iframe. The app's find keys do not reach the page, but `j`, `k`, `gg` and `G` scroll it. The preview renders the saved source, so switching from a dirty draft to view saves or discards first.
 
 One extension table drives the tree icon, the kind filter, the editor language and the drop check, so a file the tree opens as text, such as `.rs`, `.tf` or `.vue`, can also be dropped on the window.
 
@@ -42,11 +45,11 @@ Markdown rendering includes:
 
 Editing uses CodeMirror 6 with:
 
-- Vim keybindings on by default, and a switch to turn them off in Settings → Editor.
+- Vim keybindings on by default, and a switch to turn them off in Settings → Vim.
 - Word wrap and the main area width, both set in Settings → Editor.
 - Syntax modes for about 30 languages, loaded on demand.
 - Paste or drop of images and videos directly into the editor, or use the attach button in the header.
-- A header copy button: styled rich text in Markdown view, and raw text in edit mode, text files and SVG.
+- A header copy button: styled rich text in Markdown view, and raw text in edit mode, text files and SVG. HTML has no copy button in the preview.
 
 Save and conflicts:
 
@@ -55,29 +58,33 @@ Save and conflicts:
 - Each save sends the modification time, size and content hash it loaded. For an existing file, an explicit **Overwrite** is the only way to skip that check.
 - If the file changed on disk while you had unsaved edits, a conflict banner offers **Reload** or **Overwrite**. **Reload** discards the draft and takes the disk version.
 
-Switching between view and edit keeps your place, measured as a fraction of the document height. In Markdown view, `j` and `k` scroll smoothly by a few lines, `gg` glides to the top and `G` to the bottom. Scrolling respects the system reduced-motion setting.
+Switching between view and edit keeps your place, measured as a fraction of the document height. In view mode, `j` and `k` scroll smoothly by a few lines, `gg` glides to the top and `G` to the bottom. `Ctrl+D` and `Ctrl+U` scroll half a screen in the reading view and in the editor; in the editor the cursor keeps its screen row. In any text input outside the editor, `Ctrl+U` clears the field. Scrolling respects the system reduced-motion setting.
 
-The main area zooms from 50% to 300% with `Ctrl` (or `Cmd`) plus the scroll wheel, and with `Ctrl`/`Cmd` `+`, `-` and `0` (reset). The zoom covers the whole main area, both the reading view and the editor. As it grows, the column first widens until it fills the pane, then the main area scrolls sideways. Zoom starts at 100% after a restart and returns to 100% when you switch to another file. Excalidraw drawings are separate: the drawing keeps its own zoom and the main-area zoom keys and the scroll wheel leave it alone. Drag with the middle mouse button to pan the main area, which is handy once it is zoomed in.
+The main area zooms from 50% to 300% with `Ctrl` (or `Cmd`) plus the scroll wheel, and with `Ctrl`/`Cmd` `+`, `-` and `0` (reset). The zoom covers the whole main area, both the reading view and the editor. As it grows, the column first widens until it fills the pane, then the main area scrolls sideways. Zoom starts at 100% after a restart and returns to 100% when you switch to another file. Excalidraw drawings and HTML view mode are separate: they use the full main area width, and the main-area zoom keys and scroll wheel leave them alone. Excalidraw keeps its own zoom; HTML scrolls inside the iframe. Drag with the middle mouse button to pan the main area, which is handy once it is zoomed in.
 
-`Ctrl+F` finds inside the open note. The reading view shows a find bar in the top-right corner with the match count, previous and next buttons, `Enter` / `Shift+Enter` to step and `Esc` to close; every match is highlighted and the active one scrolls into view. In the editor, the same key opens CodeMirror's search panel.
+`Ctrl+F` finds inside the open note. The reading view shows a find bar in the top-right corner with the match count, previous and next buttons, `Enter` / `Shift+Enter` to step and `Esc` to close; every match is highlighted and the active one scrolls into view. In the editor, the same key opens CodeMirror's search panel, styled as the same floating card. Next and Previous move the cursor to the match instead of selecting the whole match, so a later mouse click does not extend a selection.
 
 The pen button next to the Edit toggle turns the main area into a drawing surface for presentations. It is offered for every file in view mode except Excalidraw. Draw freehand in the picked colour; the 3px stroke suits handwriting. The eraser removes whole strokes instead of pixels, and `Ctrl+Z` / `Ctrl+Shift+Z` (or the Undo and Redo buttons) walk the stroke history. The drawing sits on the window, not on the page, so scrolling the note moves the content under the drawing and the drawing stays where it was put. The wheel still scrolls the note, `Ctrl` + wheel still zooms the main area, and the middle mouse button still pans. **Clear** erases the drawing, **Close** or the pen button turns the mode off, and opening another file closes the pen.
 
-The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings → Editor. Pasted text is stored with the app settings and no file is read. Vimrc support covers:
+Vim keybindings are configured in Settings → Vim. The app does not read `~/.vimrc`. The settings are:
 
-- Mapping commands (`map`, `noremap`, `nmap`, `nnoremap`, `vmap`, `vnoremap`, `xmap`, `xnoremap`, `smap`, `snoremap`, `omap`, `onoremap`, `imap`, `inoremap`), including `<leader>` and `<silent>`.
-- A leader that is also a normal-mode command works, for example space or comma. After the leader key the editor waits up to 600 ms for the next key. If no mapping completes, the leader's own command runs.
-- `set` options for tab size, indentation, line numbers and `clipboard=unnamed`/`unnamedplus`. Other options depend on the Vim layer.
-- With a clipboard option set, unnamed yanks, deletes and changes write to the system clipboard, and returning to the window refreshes the Vim registers from it.
-- The `+` and `*` registers read and write the system clipboard through the Tauri clipboard plugin, so `"+p`, `"+y` and `clipboard=unnamedplus` mappings keep working in the packaged app.
-- Changing the vimrc removes mappings that are no longer present. Word wrap comes from the Settings toggle, so `set wrap` and `set nowrap` do not change it.
-- The `vim` badge tooltip shows how many lines were parsed, how many mappings were loaded and which lines were skipped.
+- **Leader key.** One key, default `Space`. Used by `<leader>` in remaps and editor shortcut bindings.
+- **Clipboard.** Three targets: yank, delete/change and paste. Each uses the unnamed register, the system clipboard, or (for delete/change) the black hole. The defaults yank and paste through the system clipboard and send deletes to the black hole. `+` and `*` always read and write the system clipboard through the Tauri plugin. A visual yank can keep the selection.
+- **Line numbers.** Off, absolute or relative.
+- **Scroll offset.** Keep this many lines visible above and below the cursor, like VS Code's `editor.cursorSurroundingLines`. Default 10; 0 turns it off.
+- **Indentation.** Tab size, indent width, and spaces versus tabs.
+- **Search.** Ignore case and smart case for the reading-view find bar. Vim's `/` search and the editor's search panel keep their own case toggles.
+- **Remaps.** A table of mode, left-hand side and right-hand side. `<leader>` is accepted on both sides. Multi-key left-hand sides such as `<leader>ss` work: after a prefix the editor waits up to 600 ms for the next key. Register prefixes such as `"+` are not supported; the clipboard settings choose the register.
+- **Save.** `:w`, `:update`, `:wq` and `:wa` call the same save command as `Ctrl+S`.
+- **Unsupported.** Vimrc commands, autocommands, functions, `<expr>` mappings, persistent undo, `scrolloff`, `:set` at the ex prompt, and confirm-each replace. Word wrap comes from the Settings toggle.
+
+These settings apply only while Vim keybindings are on. Turning Vim off disables the controls and restores the editor defaults: no line-number gutter, 4-space tabs with a 2-space indent, no scroll offset, and ignore-case search without smart case.
 
 ## Files and folders
 
 - **Create.** `a` creates a file in the tree. The name accepts a relative path, so `notes/today.md` creates nested folders. End the name with `/` to create a folder.
 - **Rename.** `r` renames the current row. It rejects an empty name, a name with a slash or backslash, a name that starts with a dot and a name longer than 200 bytes.
-- **Move.** `m` opens a folder list and moves the current row, or every marked row, into the chosen folder. The list starts at the item's current parent, filters as you type, and accepts Enter to move or Esc to cancel. The row is saved first, and the move can be undone with `u`.
+- **Move.** `m` opens a folder list and moves the current row, or every marked row, into the chosen folder. The list starts at the item's current parent, filters as you type, and accepts Enter to move or Esc to cancel. You can also drag a tree row onto a folder, or onto the empty tree background to move it to the root. Dragging always moves; it never copies. The row is saved first, and the move can be undone with `u`.
 - **Trash.** `d` moves the current row, or every selected row, to `.mdlite-trash` inside the root. The trash is flat: an entry keeps its name, and a `-<timestamp>` suffix is added only when that name already exists. A hidden `.mdlite-meta-<hash>.json` beside the entry stores the original path and deletion time.
 - **Restore.** The Trash button in the sidebar opens the trash browser. Restore uses the stored original path; if the original path is unknown, the browser asks for a relative path. Entries can also be deleted permanently.
 - **Existing targets.** Restore, rename and move refuse a target that already exists with "target already exists".
@@ -85,7 +92,7 @@ The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings
 - **Context menu.** Right-click a tree row or a folder-table row for New file, Copy, Paste, Rename, Move to trash, Move, Reveal (Finder on macOS, File Explorer on Windows, the file manager on Linux) and Copy path. New file creates the entry inside a folder, or beside a file; a name ending in `/` creates a folder. Paste puts the copied item beside a file or inside a folder. Copy path writes the absolute path to the system clipboard. Right-clicking the empty space below the rows offers New file and Paste in the folder you are viewing.
 - **Selection delete.** With several rows selected, one confirm moves all of them to the trash. Nested selections are collapsed: selecting a folder and a file inside it deletes the folder once.
 - **Undo.** `u` covers create, rename, move, paste and trash through the same pipeline. It lasts for the current session. Every file operation checks the active root after its dialog; if the folder changed, the operation is cancelled and nothing is written.
-- **Close.** The close button in the header, or `Ctrl+W`, closes the open file after the save prompt if it has unsaved changes. The folder view for that file's folder is shown. A temporary file closed this way asks where to save it, unless it has no changes.
+- **Close.** The close button in the header, or `Ctrl+W`, closes the open file after the save prompt if it has unsaved changes. The folder view for that file's folder is shown. A temporary file closed this way asks where to save it, unless it has no changes. The same shortcut closes Settings and Trash.
 - **Missing or unreadable files.** If a file cannot be opened, the main area shows a card with an icon, the reason, the path, **Try again** and **Close**. A file that is gone reads "File not found". The close button in the header and `Ctrl+W` work here too, so a failed open never traps the view.
 
 ## Search
@@ -99,16 +106,17 @@ The vimrc source is `~/.vimrc`, a custom path or pasted text, chosen in Settings
 
 ## Settings
 
-The gear button opens Settings, with a side menu of four pages:
+The gear button opens Settings, with a side menu of five pages:
 
 - **Root folders:** add, switch and remove roots. **Browse…** uses the native folder picker. The last root cannot be removed. The active root is what the tree, search, editor and file operations use. On first run, the app opens the folder picker when no root is configured.
-- **Editor:** turn Vim keybindings and word wrap on or off, set the main area width, and choose the vimrc source. The width is clamped to 50–100% of the main pane and applied as horizontal padding on the whole main body, so it affects the folder view, editor, Markdown view, trash and Settings. Excalidraw drawings ignore the setting and always use the full main area width. The sidebar keeps its width. A summary shows the resolved source, the loaded mappings, parsed lines and indentation.
+- **Editor:** turn word wrap on or off, set the main area width and set the sidebar width. The main width is clamped to 50–100% of the main pane and applied as horizontal padding on the whole main body, so it affects the folder view, editor, Markdown view, trash and Settings. Excalidraw drawings and HTML view mode ignore the setting and use the full main area width. The sidebar width is in pixels (0 hides it; drag the left edge or click the resize handle to bring it back). Dragging the sidebar edge updates and saves the same setting.
+- **Vim:** turn Vim keybindings on or off and configure the leader key, clipboard targets, line numbers, scroll offset, indentation, search and remaps. The controls below the switch are disabled while Vim is off, and none of them takes effect: the editor uses fixed defaults (no gutter, 4-space tabs with a 2-space indent, no scroll offset, ignore-case search).
 - **Shortcuts:** click a key and press a new combination. Shortcuts are grouped as Global, Editor and File tree. Backspace clears a key, Esc cancels, and each row can be reset to its default. A binding that is already used is rejected; a duplicate that comes from a hand-edited config is flagged.
-- **About:** the app version, config file path, current root, vimrc source and the keys that cannot be changed.
+- **About:** the app version, config file path, current root, Vim state, the fixed keys, and a button that opens the Shortcuts page.
 
-Defaults are Vim on, word wrap on, main width 100, vimrc source `~/.vimrc` (automatic) and no shortcut overrides. Changes save automatically after 450 ms.
+Defaults are Vim on, leader `Space`, yank and paste through the system clipboard, deletes to the black hole, relative line numbers, scroll offset 10, 2-space indentation, ignore case with smart case, word wrap on, main width 100, sidebar width 296 and no shortcut overrides. Changes save automatically after 450 ms.
 
-These keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q`. `Cmd` with `W` stays reserved for the window. `⌃D`/`⌃U` and `⌥↓`/`⌥↑` are editor shortcuts. With Vim on, Vim handles the Control keys.
+These keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `N`, `P`, `A` or `←`, and `Ctrl`/`Cmd` with `Q`. `Cmd` with `W` stays reserved for the window, and `Cmd`+`Tab` stays with the system. `Ctrl`+`Tab` is the default recent-file shortcut and can be changed in Settings. `⌃D`/`⌃U` are half-page scroll commands outside inputs, `⌥↓`/`⌥↑` move a full page, and `⌥⇧↓`/`⌥⇧↑` move the cursor to the visible edge without scrolling. They work with Vim on or off. The app also keeps `⌃S`, `⌃W`, `⌃E`, `⌃H`, `⌃L` and `⌃F` as defaults.
 
 Roots, editor settings and shortcut overrides live in one config file. [Architecture → Storage](architecture.md#storage) covers the path, the one-time import of older configs, the environment variables and what stays in memory.
 
@@ -124,7 +132,7 @@ A filesystem watcher reports changes on a 250 ms debounce. The tree refreshes wi
 
 ## Recent files
 
-The last five opened files are remembered for the session. Hold `⌃` and press `Tab` to cycle through them; release `⌃` to open the highlighted file. `⌃⇧Tab` walks the list backwards and `Esc` cancels.
+The last five opened files are remembered for the session. Hold `⌃` and press `Tab` (the default; change it in Settings → Shortcuts) to cycle through them, then press `Enter` to open the highlighted file; `⌃⇧Tab` walks the list backwards and `Esc` cancels. Releasing `⌃` leaves the menu open. The history button in the sidebar opens the same list; click a row to open it. Each file keeps the scroll position it had when you left it.
 
 ## Limits
 
@@ -136,7 +144,8 @@ The last five opened files are remembered for the session. Hold `⌃` and press 
 | Tree entries | 20,000 |
 | Content search | 120 files, 6 matches per file, 400 total |
 | Fallback search file | 2 MB |
-| Vimrc text | 200,000 characters |
+| Vim remaps | 200 |
+| Scroll offset | 0–50 lines |
 | Name after rename | 200 bytes |
 | Temporary file drop | 4,000,000 bytes |
 

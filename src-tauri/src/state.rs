@@ -388,24 +388,50 @@ mod tests {
         assert_eq!(config.roots.len(), 1);
         assert!(config.settings.vim_enabled);
         assert!(config.settings.word_wrap);
-        assert_eq!(config.settings.vimrc.mode, "auto");
+        assert_eq!(config.settings.vim_leader, "Space");
+        assert_eq!(config.settings.line_numbers, "relative");
         assert!(config.settings.shortcuts.is_empty());
+    }
+
+    #[test]
+    fn reads_settings_with_missing_fields() {
+        let raw = r#"{
+            "roots": [{"id": "a", "name": "notes", "path": "/tmp/notes"}],
+            "active": "a",
+            "settings": {
+                "vimEnabled": false,
+                "shortcuts": {"app.recentFiles": "ctrl+alt+r"}
+            }
+        }"#;
+        let config: Config = serde_json::from_str(raw).unwrap();
+        assert!(!config.settings.vim_enabled);
+        assert_eq!(config.settings.vim_leader, "Space");
+        assert!(config.settings.word_wrap);
+        assert_eq!(config.settings.line_numbers, "relative");
+        assert_eq!(config.settings.sidebar_width, 296);
+        assert_eq!(
+            config.settings.shortcuts.get("app.recentFiles").unwrap(),
+            "ctrl+alt+r"
+        );
     }
 
     #[test]
     fn settings_roundtrip_uses_camel_case() {
         let mut config = Config::default();
-        config.settings.vimrc.mode = "inline".into();
+        config.settings.vim_leader = ",".into();
         config
             .settings
             .shortcuts
             .insert("tree.down".into(), "shift+j".into());
         let raw = serde_json::to_string(&config).unwrap();
         assert!(raw.contains("\"vimEnabled\""));
+        assert!(raw.contains("\"vimLeader\""));
+        assert!(raw.contains("\"lineNumbers\""));
         assert!(raw.contains("\"wordWrap\""));
         assert!(raw.contains("\"settings\""));
         let loaded: Config = serde_json::from_str(&raw).unwrap();
         assert_eq!(loaded.settings.shortcuts.get("tree.down").unwrap(), "shift+j");
+        assert_eq!(loaded.settings.vim_leader, ",");
     }
 
     #[test]
@@ -416,17 +442,21 @@ mod tests {
             settings: AppSettings::default(),
         };
         config.settings.word_wrap = false;
-        config.settings.vimrc.mode = "inline".into();
-        config.settings.vimrc.text = "set number".into();
+        config.settings.line_numbers = "off".into();
         let normalized = config.normalized();
         assert!(normalized.roots.is_empty());
         assert!(normalized.active.is_empty());
         assert!(!normalized.settings.word_wrap);
-        assert_eq!(normalized.settings.vimrc.mode, "inline");
+        assert_eq!(normalized.settings.line_numbers, "off");
     }
 
     #[test]
     fn invalid_settings_are_repaired_on_load() {
+        let mut settings = AppSettings::default();
+        settings.vim_leader = "   ".into();
+        settings.line_numbers = "Elsewhere".into();
+        settings.tab_size = 0;
+        settings.indent_width = 99;
         let config = Config {
             roots: vec![RootEntry {
                 id: "a".into(),
@@ -434,21 +464,12 @@ mod tests {
                 path: "/tmp/notes".into(),
             }],
             active: "a".into(),
-            settings: AppSettings {
-                vimrc: crate::settings::VimrcConfig {
-                    mode: "Elsewhere".into(),
-                    path: "x".repeat(5000),
-                    text: "x".repeat(300_000),
-                },
-                ..AppSettings::default()
-            },
+            settings,
         };
         let normalized = config.normalized();
-        assert_eq!(normalized.settings.vimrc.mode, "auto");
-        assert!(normalized.settings.vimrc.path.is_empty());
-        assert_eq!(
-            normalized.settings.vimrc.text.chars().count(),
-            crate::settings::VIMRC_LIMIT
-        );
+        assert_eq!(normalized.settings.vim_leader, "Space");
+        assert_eq!(normalized.settings.line_numbers, "relative");
+        assert_eq!(normalized.settings.tab_size, 1);
+        assert_eq!(normalized.settings.indent_width, 8);
     }
 }

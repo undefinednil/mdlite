@@ -19,7 +19,9 @@ import { matchesBinding, matchesCommand } from '../lib/shortcuts'
 import {
   defaultSortDirection,
   flattenTree,
+  isFolderOpen,
   pruneTree,
+  collectFolders,
   type TreeRow,
   type TreeSortKey,
 } from '../lib/tree'
@@ -118,12 +120,30 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   const [viewportHeight, setViewportHeight] = useState(600)
   const [status, setStatus] = useState('')
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<RelPath>>(() => new Set())
+  const [dropTarget, setDropTarget] = useState<RelPath | null>(null)
 
   const selection = useMemo(() => createSelection<RelPath>(remapPath), [])
   const { cursor, marked } = useSelectionSnapshot(selection)
   const { clipboard } = useFileOperationsSnapshot(operations)
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const dragTargetsRef = useRef<RelPath[]>([])
+
+  const filterActive = useMemo(() => {
+    const needle = filter.trim()
+    const after =
+      timeFilter === '3d'
+        ? Date.now() - 3 * 86_400_000
+        : timeFilter === '7d'
+          ? Date.now() - 7 * 86_400_000
+          : timeFilter === 'custom' && rangeFrom
+            ? new Date(`${rangeFrom}T00:00:00`).getTime()
+            : 0
+    const before =
+      timeFilter === 'custom' && rangeTo ? new Date(`${rangeTo}T23:59:59.999`).getTime() : 0
+    return Boolean(needle) || after > 0 || before > 0 || kinds.size > 0 || sizeBucket !== 'any'
+  }, [filter, timeFilter, rangeFrom, rangeTo, kinds, sizeBucket])
 
   const rows = useMemo(() => {
     const needle = filter.trim()
@@ -137,7 +157,6 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
             : 0
     const before =
       timeFilter === 'custom' && rangeTo ? new Date(`${rangeTo}T23:59:59.999`).getTime() : 0
-    const active = Boolean(needle) || after > 0 || before > 0 || kinds.size > 0 || sizeBucket !== 'any'
 
     let matcher: ((path: RelPath) => boolean) | null = null
     if (needle) {
@@ -157,7 +176,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       }
     }
 
-    const source = active
+    const source = filterActive
       ? pruneTree(
           nodes,
           (node) => {
@@ -175,9 +194,52 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     return flattenTree(
       source,
       { key: sort, direction: defaultSortDirection(sort) },
-      (node) => active || expanded.has(node.path),
+      (node) => isFolderOpen(node.path, filterActive, collapsed, expanded),
     )
-  }, [nodes, filter, filterMode, sort, timeFilter, rangeFrom, rangeTo, kinds, sizeBucket, expanded])
+  }, [
+    nodes,
+    filter,
+    filterMode,
+    sort,
+    timeFilter,
+    rangeFrom,
+    rangeTo,
+    kinds,
+    sizeBucket,
+    expanded,
+    collapsed,
+    filterActive,
+  ])
+
+  useEffect(() => {
+    setCollapsed((prev) => (prev.size ? new Set() : prev))
+  }, [filter, filterMode, timeFilter, rangeFrom, rangeTo, kinds, sizeBucket])
+
+  const folderOpen = (path: RelPath): boolean =>
+    isFolderOpen(path, filterActive, collapsed, expanded)
+
+  const toggleFolder = (path: RelPath): void => {
+    if (!filterActive) {
+      onToggle(path)
+      return
+    }
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const collapseAll = (): void => {
+    onCollapseAll()
+    if (!filterActive) return
+    const next = new Set<RelPath>()
+    for (const folder of collectFolders(nodes)) {
+      if (folder.path) next.add(folder.path)
+    }
+    setCollapsed(next)
+  }
 
   const visiblePaths = useMemo(() => rows.map((row) => row.node.path), [rows])
 
@@ -353,9 +415,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
 
   const trash = async (path?: RelPath) => trashTargets(actionTargets(path))
 
-  const moveTargets = async (targets: RelPath[]) => {
-    if (!targets.length) return
-    const result = await operations.move(targets)
+  const finishMove = (result: FileOperationResult) => {
     applyResult(result)
     const first = result.changes[0]
     if (!first?.to) return
@@ -364,9 +424,87 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     const destination = dirname(first.to)
     if (destination) {
       for (const path of [...ancestors(destination), destination]) {
-        if (!expanded.has(path)) onToggle(path)
+        if (!folderOpen(path)) toggleFolder(path)
       }
     }
+  }
+
+  const moveTargets = async (targets: RelPath[], destination?: RelPath) => {
+    if (!targets.length) return
+    const result = await operations.move(targets, destination)
+    finishMove(result)
+  }
+
+  const canDrop = (destination: RelPath): boolean => {
+    const targets = dragTargetsRef.current
+    if (!targets.length) return false
+    return targets.every(
+      (path) => destination !== path && !destination.startsWith(`${path}/`),
+    )
+  }
+
+  const startRowDrag = (event: React.DragEvent<HTMLDivElement>, path: RelPath) => {
+    const targets = actionTargets(path)
+    if (!targets.length) return
+    dragTargetsRef.current = targets
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', path)
+    event.dataTransfer.setData('application/x-mdlite-paths', JSON.stringify(targets))
+  }
+
+  const endRowDrag = () => {
+    dragTargetsRef.current = []
+    setDropTarget(null)
+  }
+
+  const overRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath, isDir: boolean) => {
+    if (!isDir || !canDrop(path)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'move'
+    if (dropTarget !== path) setDropTarget(path)
+  }
+
+  const leaveRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    if (dropTarget === path) setDropTarget(null)
+  }
+
+  const dropRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath, isDir: boolean) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const targets = dragTargetsRef.current
+    const allowed = isDir && canDrop(path)
+    dragTargetsRef.current = []
+    setDropTarget(null)
+    if (!allowed) return
+    void moveTargets(targets, path)
+  }
+
+  const overTree = (event: React.DragEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('.tree-row')) return
+    const root = relPath('')
+    if (!canDrop(root)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    if (dropTarget !== root) setDropTarget(root)
+  }
+
+  const leaveTree = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+    if (dropTarget === relPath('')) setDropTarget(null)
+  }
+
+  const dropTree = (event: React.DragEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('.tree-row')) return
+    event.preventDefault()
+    const root = relPath('')
+    const targets = dragTargetsRef.current
+    const allowed = canDrop(root)
+    dragTargetsRef.current = []
+    setDropTarget(null)
+    if (!allowed) return
+    void moveTargets(targets, root)
   }
 
   const move = async (path?: RelPath) => moveTargets(actionTargets(path))
@@ -498,7 +636,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     if (key === 'ArrowRight') {
       event.preventDefault()
       if (activeRow?.node.type === 'dir') {
-        if (!expanded.has(activeRow.node.path)) onToggle(activeRow.node.path)
+        if (!folderOpen(activeRow.node.path)) toggleFolder(activeRow.node.path)
         else onOpenDir(activeRow.node.path)
       }
       return
@@ -506,11 +644,11 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     if (key === 'ArrowLeft') {
       event.preventDefault()
       if (matchesBinding('mod+left', event) || matchesBinding('ctrl+left', event)) {
-        onCollapseAll()
+        collapseAll()
         return
       }
-      if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) {
-        onToggle(activeRow.node.path)
+      if (activeRow?.node.type === 'dir' && folderOpen(activeRow.node.path)) {
+        toggleFolder(activeRow.node.path)
         return
       }
       if (activeRow) {
@@ -524,7 +662,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     if (key === ' ' || key === 'Spacebar') {
       if (activeRow?.node.type === 'dir') {
         event.preventDefault()
-        onToggle(activeRow.node.path)
+        toggleFolder(activeRow.node.path)
       }
       return
     }
@@ -543,15 +681,15 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     if (shortcut('tree.expand')) {
       event.preventDefault()
       if (activeRow?.node.type === 'dir') {
-        if (!expanded.has(activeRow.node.path)) onToggle(activeRow.node.path)
+        if (!folderOpen(activeRow.node.path)) toggleFolder(activeRow.node.path)
         else onOpenDir(activeRow.node.path)
       } else if (activeRow) onSelect(activeRow.node.path)
       return
     }
     if (shortcut('tree.collapse')) {
       event.preventDefault()
-      if (activeRow?.node.type === 'dir' && expanded.has(activeRow.node.path)) {
-        onToggle(activeRow.node.path)
+      if (activeRow?.node.type === 'dir' && folderOpen(activeRow.node.path)) {
+        toggleFolder(activeRow.node.path)
       } else if (activeRow) {
         const parent = dirname(activeRow.node.path)
         const index = rows.findIndex((row) => row.node.path === parent)
@@ -789,10 +927,13 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
       </div>
 
       <div
-        className="tree-scroll"
+        className={`tree-scroll${dropTarget === relPath('') ? ' drop-root' : ''}`}
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
+        onDragOver={overTree}
+        onDragLeave={leaveTree}
+        onDrop={dropTree}
         onContextMenu={(event) => {
           if ((event.target as HTMLElement).closest('.tree-row')) return
           event.preventDefault()
@@ -820,13 +961,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
             {visible.map((row, offset) => {
               const index = start + offset
               const isDir = row.node.type === 'dir'
-              const isOpen =
-                isDir &&
-                (expanded.has(row.node.path) ||
-                  filter.trim() !== '' ||
-                  timeFilter !== 'all' ||
-                  kinds.size > 0 ||
-                  sizeBucket !== 'any')
+              const isOpen = isDir && folderOpen(row.node.path)
               const isActive = cursor === row.node.path
               const isSelected = selected === row.node.path
               const isMarked = marked.has(row.node.path)
@@ -846,6 +981,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                   currentDir: isCurrentDir,
                   cut: isCut,
                   context: isContext,
+                  dropTarget: dropTarget === row.node.path,
                 },
               })
               const { twisty, icon } = rowLeading(view)
@@ -862,8 +998,14 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                     right: 0,
                     paddingLeft: 8 + row.depth * 13,
                   }}
+                  draggable
                   onClick={(event) => handleRowClick(row, event)}
                   onContextMenu={(event) => openRowContextMenu(row, event)}
+                  onDragStart={(event) => startRowDrag(event, row.node.path)}
+                  onDragEnd={endRowDrag}
+                  onDragOver={(event) => overRow(event, row.node.path, isDir)}
+                  onDragLeave={(event) => leaveRow(event, row.node.path)}
+                  onDrop={(event) => dropRow(event, row.node.path, isDir)}
                   title={row.node.path}
                 >
                   {twisty ? (
@@ -874,7 +1016,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                       onClick={(event) => {
                         event.stopPropagation()
                         scrollRef.current?.focus()
-                        onToggle(row.node.path)
+                        toggleFolder(row.node.path)
                       }}
                       title={twisty.open ? 'Collapse' : 'Expand'}
                     >

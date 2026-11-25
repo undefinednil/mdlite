@@ -69,6 +69,7 @@ const { defaultKeymap } = await import('@codemirror/commands')
 const { indentUnit } = await import('@codemirror/language')
 const { getCM } = await import('@replit/codemirror-vim')
 const { editorKeyExtensions } = await import('./editorKeys')
+const { collapseSearchSelection } = await import('./searchSelection')
 
 interface Options {
   vim: boolean
@@ -84,9 +85,11 @@ function createView(options: Options): EditorViewType {
       extensions: [
         keymap.of([...defaultKeymap]),
         ...editorKeyExtensions({
-          indent: options.indent ?? '\t',
+          getIndent: () => options.indent ?? '\t',
           vimEnabled: options.vim,
           getShortcuts: () => options.shortcuts ?? {},
+          getMappings: () => [],
+          getDocKey: () => '',
         }),
         EditorState.tabSize.of(8),
         indentUnit.of(options.indent ?? '\t'),
@@ -106,7 +109,7 @@ function press(view: EditorViewType, init: KeyboardEventInit): KeyboardEvent {
   return event
 }
 
-test('vim owns Ctrl+D instead of the Emacs delete binding', () => {
+test('the app half-page binding owns Ctrl+D with vim on', () => {
   const view = createView({ vim: true })
   const event = press(view, { key: 'd', ctrlKey: true })
   assert.equal(view.state.doc.toString(), 'alpha\nbeta\ngamma\ndelta')
@@ -114,11 +117,29 @@ test('vim owns Ctrl+D instead of the Emacs delete binding', () => {
   view.destroy()
 })
 
-test('the app page-down binding still owns Ctrl+D without vim', () => {
+test('the app half-page binding owns Ctrl+D without vim', () => {
   const view = createView({ vim: false })
   const event = press(view, { key: 'd', ctrlKey: true })
   assert.equal(view.state.doc.toString(), 'alpha\nbeta\ngamma\ndelta')
   assert.equal(event.defaultPrevented, true)
+  view.destroy()
+})
+
+test('Ctrl+D moves the cursor down half a page with vim on', () => {
+  const view = createView({ vim: true })
+  const before = view.state.doc.lineAt(view.state.selection.main.head).number
+  press(view, { key: 'd', ctrlKey: true })
+  const after = view.state.doc.lineAt(view.state.selection.main.head).number
+  assert.ok(after > before, `cursor stayed on line ${before}`)
+  view.destroy()
+})
+
+test('Ctrl+U keeps its insert-mode meaning with vim on', () => {
+  const view = createView({ vim: true })
+  press(view, { key: 'i' })
+  press(view, { key: 'X' })
+  press(view, { key: 'u', ctrlKey: true })
+  assert.equal(view.state.doc.toString().startsWith('X'), false)
   view.destroy()
 })
 
@@ -155,10 +176,28 @@ test('Tab is consumed in vim normal mode without editing', () => {
   view.destroy()
 })
 
-test('custom editor shortcuts are ignored while vim is active', () => {
+test('custom editor shortcuts run while vim is active', () => {
   const view = createView({ vim: true, shortcuts: { 'editor.pageDown': 'alt+f12' } })
   const event = press(view, { key: 'F12', altKey: true })
-  assert.equal(event.defaultPrevented, false)
+  assert.equal(event.defaultPrevented, true)
+  view.destroy()
+})
+
+test('a search selection collapses to a cursor so a click cannot extend it', () => {
+  const view = createView({ vim: false, doc: 'alpha beta' })
+  view.dispatch({ selection: { anchor: 0, head: 5 }, userEvent: 'select.search' })
+  collapseSearchSelection(view, 0, 5)
+  assert.equal(view.state.selection.main.empty, true)
+  assert.equal(view.state.selection.main.head, 0)
+  view.destroy()
+})
+
+test('a changed selection is not collapsed by a stale search result', () => {
+  const view = createView({ vim: false, doc: 'alpha beta' })
+  view.dispatch({ selection: { anchor: 6, head: 10 }, userEvent: 'select' })
+  collapseSearchSelection(view, 0, 5)
+  assert.equal(view.state.selection.main.from, 6)
+  assert.equal(view.state.selection.main.to, 10)
   view.destroy()
 })
 

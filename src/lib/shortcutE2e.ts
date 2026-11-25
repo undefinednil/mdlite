@@ -94,12 +94,22 @@ function setInput(input: HTMLInputElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
   setter?.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
+  input.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
 async function openFile(name: string): Promise<void> {
   const row = await waitRow(name)
   row.click()
-  await wait(150)
+  for (let index = 0; index < 60; index += 1) {
+    const crumb = document.querySelector('.crumb')?.textContent ?? ''
+    if (crumb.includes(name)) {
+      // The breadcrumb changes before the document read settles.
+      await wait(150)
+      return
+    }
+    await wait(50)
+  }
+  throw new Error(`did not open ${name}`)
 }
 
 async function ensureEditMode(): Promise<HTMLElement> {
@@ -168,6 +178,11 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     const palette = await waitFor<HTMLElement>('.palette')
     const input = palette.querySelector<HTMLInputElement>('.palette-input')
     if (!input?.placeholder.includes('Fuzzy')) throw new Error('file palette did not open')
+    setInput(input, 'note')
+    await wait(80)
+    press(input, 'u', { ctrlKey: true })
+    await wait(80)
+    if (input.value !== '') throw new Error('Ctrl+U did not clear the file finder')
     press(input, 'Escape')
     await waitGone('.palette')
 
@@ -284,15 +299,110 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     return ':w saved the open file'
   })
 
-  await record('editor.jumpBottom', async () => {
+  await record('editor.find', async () => {
     await openFile('long.md')
     const content = await ensureEditMode()
+    press(content, 'f', { ctrlKey: true })
+    const panel = await waitFor<HTMLElement>('.cm-panel.cm-search')
+    const input = panel.querySelector<HTMLInputElement>('input[name=search]')
+    if (!input) throw new Error('search input is missing')
+    setInput(input, 'line 1')
+    await wait(150)
+    const next = panel.querySelector<HTMLButtonElement>('button[name=next]')
+    if (!next) throw new Error('next button is missing')
+    next.click()
+    await wait(200)
+    if (!document.querySelector('.cm-searchMatch')) throw new Error('search did not highlight matches')
+    if (document.querySelector('.cm-searchMatch-selected')) {
+      throw new Error('search next left a range selection')
+    }
+    const panels = panel.closest('.cm-panels')
+    if (!panels?.classList.contains('cm-panels-top')) {
+      throw new Error('search panel is not in the top panel')
+    }
+    if (getComputedStyle(panels).position !== 'absolute') {
+      throw new Error('search panel is not floating')
+    }
+    if (getComputedStyle(panel).borderRadius !== '8px') {
+      throw new Error('search panel is not styled')
+    }
+    press(input, 'Escape')
+    await wait(100)
+    return 'editor search panel'
+  })
+
+  await record('vim.search', async () => {
+    const content = editorContent()
+    press(content, '/')
+    const prompt = await waitFor<HTMLElement>('.cm-vim-panel')
+    const panels = prompt.closest('.cm-panels')
+    if (!panels?.classList.contains('cm-panels-bottom')) {
+      throw new Error('vim search prompt moved out of the bottom panel')
+    }
+    const input = prompt.querySelector<HTMLInputElement>('input')
+    press(input ?? content, 'Escape')
+    await wait(100)
+    return 'vim search prompt stays at the bottom'
+  })
+
+  await record('html.preview', async () => {
+    await openFile('page.html')
+    const frame = await waitFor<HTMLIFrameElement>('.html-view iframe')
+    const srcdoc = frame.getAttribute('srcdoc') ?? ''
+    if (frame.getAttribute('src')) throw new Error('the preview should use srcdoc')
+    if (!srcdoc.includes('<base href=')) throw new Error('the preview has no base URL')
+    if (!srcdoc.includes('data-mdlite-scroll')) throw new Error('the preview has no scroll bridge')
+    if (frame.title !== 'page.html') throw new Error(`unexpected iframe title ${frame.title}`)
+    if (frame.getAttribute('sandbox')?.includes('allow-same-origin')) {
+      throw new Error('the iframe must not be same-origin')
+    }
+    await waitFor('.html-frame.loaded')
+    if (!document.querySelector('.main-body')?.classList.contains('full')) {
+      throw new Error('HTML view did not use the full width')
+    }
+    if (document.activeElement !== frame) throw new Error('the preview did not take focus')
+    const main = document.querySelector<HTMLElement>('.main-body')
+    if (!main) throw new Error('the main area is not rendered')
+    main.focus()
+    const ratio = () => Number(frame.dataset.scrollRatio ?? '0')
+    press(main, 'j')
+    await wait(500)
+    if (!(ratio() > 0)) {
+      throw new Error(`j did not scroll the preview (${frame.dataset.scrollRatio ?? 'none'})`)
+    }
+    press(main, 'G', { shiftKey: true })
+    await wait(600)
+    if (ratio() < 0.99) {
+      throw new Error(`G did not reach the bottom (${frame.dataset.scrollRatio ?? 'none'})`)
+    }
+    press(main, 'g')
+    press(main, 'g')
+    await wait(600)
+    if (ratio() > 0.01) {
+      throw new Error(`gg did not reach the top (${frame.dataset.scrollRatio ?? 'none'})`)
+    }
+    return 'sandboxed srcdoc preview scrolls with j, G and gg'
+  })
+
+  await record('editor.halfPageDown', async () => {
+    await openFile('long.md')
+    const content = await ensureEditMode()
+    press(content, 'Escape')
+    press(content, 'g')
+    press(content, 'g')
+    await wait(80)
     const area = scroller()
     area.scrollTop = 0
-    press(content, 'd', { ctrlKey: true })
+    const active = document.querySelector('.cm-activeLine')?.textContent ?? ''
+    const event = press(content, 'd', { ctrlKey: true })
     await wait(120)
     const first = area.scrollTop
-    if (first <= 0) throw new Error('Ctrl+D did not scroll down')
+    if (first <= 0) {
+      throw new Error(
+        `Ctrl+D did not scroll down (scrollTop ${first}, max ${area.scrollHeight - area.clientHeight}, prevented ${event.defaultPrevented}, active ${active})`,
+      )
+    }
+    if (first >= area.scrollHeight - area.clientHeight) throw new Error('Ctrl+D reached the bottom')
     press(content, 'd', { ctrlKey: true })
     await wait(120)
     if (area.scrollTop === 0) throw new Error('second Ctrl+D jumped to the top')
@@ -300,16 +410,44 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     return `scrollTop ${first} -> ${area.scrollTop}`
   })
 
-  await record('editor.jumpTop', async () => {
+  await record('editor.halfPageUp', async () => {
     const content = editorContent()
+    press(content, 'Escape')
+    press(content, 'G')
+    await wait(80)
     const area = scroller()
     area.scrollTop = area.scrollHeight
     press(content, 'u', { ctrlKey: true })
     await wait(120)
+    if (area.scrollTop <= 0) throw new Error('Ctrl+U did not scroll up')
     if (area.scrollTop >= area.scrollHeight - area.clientHeight) {
-      throw new Error('Ctrl+U did not scroll up')
+      throw new Error('Ctrl+U stayed at the bottom')
     }
     return `scrollTop ${area.scrollTop}`
+  })
+
+  await record('editor.jumpBottom', async () => {
+    const content = editorContent()
+    const area = scroller()
+    area.scrollTop = 100
+    const before = area.scrollTop
+    const event = press(content, 'ArrowDown', { altKey: true, shiftKey: true })
+    await wait(80)
+    if (!event.defaultPrevented) throw new Error('Alt+Shift+ArrowDown was not handled')
+    if (area.scrollTop !== before) throw new Error('the screen-edge jump scrolled the view')
+    return 'cursor moved without scrolling'
+  })
+
+  await record('editor.jumpTop', async () => {
+    const content = editorContent()
+    const area = scroller()
+    area.scrollTop = 100
+    const before = area.scrollTop
+    const event = press(content, 'ArrowUp', { altKey: true, shiftKey: true })
+    await wait(80)
+    if (!event.defaultPrevented) throw new Error('Alt+Shift+ArrowUp was not handled')
+    if (area.scrollTop !== before) throw new Error('the screen-edge jump scrolled the view')
+    return 'cursor moved without scrolling'
   })
 
   await record('editor.pageDown', async () => {
@@ -397,6 +535,61 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     const twisty = treeRow('temp')?.querySelector<HTMLElement>('.tree-twisty')
     if (twisty?.title !== 'Expand') throw new Error('temp folder did not collapse')
     return 'temp collapsed'
+  })
+
+  await record('tree.filterFold', async () => {
+    const tree = treeScroll()
+    const input = document.querySelector<HTMLInputElement>('.tree-filter-input')
+    if (!input) throw new Error('tree filter is missing')
+    input.focus()
+    setInput(input, 'seed')
+    await wait(120)
+    const twisty = () => treeRow('temp')?.querySelector<HTMLElement>('.tree-twisty')
+    if (twisty()?.title !== 'Collapse') throw new Error('filtered folder did not open')
+    tree.focus()
+    press(tree, 'ArrowLeft', { ctrlKey: true })
+    await wait(120)
+    if (twisty()?.title !== 'Expand') throw new Error('Ctrl+Left did not fold the filtered tree')
+    input.focus()
+    setInput(input, '')
+    await wait(120)
+    return 'filtered tree folded'
+  })
+
+  await record('tree.dragMove', async () => {
+    const source = treeRow('note.md')
+    const target = treeRow('temp')
+    if (!source || !target) throw new Error('drag rows are missing')
+    const drag = (from: HTMLElement, to: HTMLElement) => {
+      const data = new DataTransfer()
+      from.dispatchEvent(
+        new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }),
+      )
+      to.dispatchEvent(
+        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }),
+      )
+      to.dispatchEvent(
+        new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }),
+      )
+      from.dispatchEvent(
+        new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: data }),
+      )
+    }
+    drag(source, target)
+    await wait(600)
+    const moved = treeRow('note.md')
+    if (moved?.title !== 'temp/note.md') {
+      throw new Error(`drag move left ${moved?.title ?? 'nothing'}`)
+    }
+    const tree = document.querySelector<HTMLElement>('.tree-scroll')
+    if (!tree) throw new Error('tree is missing')
+    drag(moved, tree)
+    await wait(600)
+    const back = treeRow('note.md')
+    if (back?.title !== 'note.md') {
+      throw new Error(`drag back left ${back?.title ?? 'nothing'}`)
+    }
+    return 'dragged note.md into temp and back'
   })
 
   await record('tree.newFile', async () => {
@@ -507,8 +700,29 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     document.body.dispatchEvent(
       new KeyboardEvent('keyup', { key: 'Control', bubbles: true, cancelable: true }),
     )
+    await wait(80)
+    if (!document.querySelector('.cycle')) throw new Error('the menu closed when Ctrl was released')
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
     await waitGone('.cycle')
-    return 'recent-file cycle'
+    return 'recent-file cycle opens on Enter'
+  })
+
+  await record('recent.button', async () => {
+    await openFile('note.md')
+    await openFile('long.md')
+    const button = document.querySelector<HTMLButtonElement>(
+      '.sidebar-actions button[title="Recent files"]',
+    )
+    if (!button) throw new Error('recent files button is missing')
+    button.click()
+    await waitFor('.cycle')
+    const rows = document.querySelectorAll<HTMLButtonElement>('.cycle-item')
+    if (rows.length < 2) throw new Error('recent files are missing')
+    rows[0]?.click()
+    await waitGone('.cycle')
+    return 'recent files opened from the button'
   })
 
   await record('Escape', async () => {
@@ -529,6 +743,63 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     press(target, 'w', { ctrlKey: true })
     await waitFor('.folder-view')
     return 'closed the file and showed its folder'
+  })
+
+  await record('settings.close', async () => {
+    const gear = document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Settings"]')
+    if (!gear) throw new Error('settings button is missing')
+    gear.click()
+    const settings = await waitFor<HTMLElement>('.settings')
+    press(settings, 'w', { ctrlKey: true })
+    await waitGone('.settings')
+    return 'Settings closed with Ctrl+W'
+  })
+
+  await record('settings.sidebarWidth', async () => {
+    const gear = document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Settings"]')
+    if (!gear) throw new Error('settings button is missing')
+    gear.click()
+    const settings = await waitFor<HTMLElement>('.settings')
+    const editor = [...settings.querySelectorAll<HTMLButtonElement>('.settings-nav-item')].find((button) =>
+      button.textContent?.includes('Editor'),
+    )
+    if (!editor) throw new Error('editor settings tab is missing')
+    editor.click()
+    const widthInput = () =>
+      document.querySelector<HTMLInputElement>('input[aria-label="Sidebar width"]')
+    const input = await waitFor<HTMLInputElement>('input[aria-label="Sidebar width"]')
+    if (!input) throw new Error('sidebar width setting is missing')
+    setInput(input, '320')
+    await wait(1200)
+    if (input.value !== '320') throw new Error(`sidebar width input is ${input.value}`)
+    const app = document.querySelector<HTMLElement>('.app')
+    if (app?.style.getPropertyValue('--sidebar-width') !== '320px') {
+      throw new Error(`sidebar width is ${app?.style.getPropertyValue('--sidebar-width')}`)
+    }
+    const zero = widthInput()
+    if (!zero) throw new Error('sidebar width setting disappeared')
+    setInput(zero, '0')
+    await wait(1200)
+    if (app?.style.getPropertyValue('--sidebar-width') !== '0px') {
+      throw new Error(`sidebar was not hidden: ${app?.style.getPropertyValue('--sidebar-width')}`)
+    }
+    const restore = widthInput()
+    if (!restore) throw new Error('sidebar width setting disappeared')
+    setInput(restore, '296')
+    await wait(1200)
+    press(settings, 'w', { ctrlKey: true })
+    await waitGone('.settings')
+    return 'sidebar width applied and persisted'
+  })
+
+  await record('trash.close', async () => {
+    const button = document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Trash"]')
+    if (!button) throw new Error('trash button is missing')
+    button.click()
+    const trash = await waitFor<HTMLElement>('.trash-view')
+    press(trash, 'w', { ctrlKey: true })
+    await waitGone('.trash-view')
+    return 'Trash closed with Ctrl+W'
   })
 
   return checks

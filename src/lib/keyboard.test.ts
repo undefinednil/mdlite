@@ -32,6 +32,7 @@ const base: AppShortcutContext = {
   mac: false,
   paletteOpen: false,
   settingsOpen: false,
+  trashOpen: false,
   cycleOpen: false,
   save: false,
   findFile: false,
@@ -220,4 +221,28 @@ test('modal surfaces suppress app navigation shortcuts except save', () => {
       true,
     )
   }
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      settingsOpen: true,
+      closeFile: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      trashOpen: true,
+      closeFile: true,
+    }),
+    true,
+  )
+  assert.equal(
+    appShortcutAllowed(event({ key: 'w', ctrlKey: true }), {
+      ...base,
+      paletteOpen: true,
+      closeFile: true,
+    }),
+    false,
+  )
 })

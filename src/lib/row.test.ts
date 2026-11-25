@@ -20,8 +20,9 @@ test('builds a row class list from the base and the state flags', () => {
       context: true,
       currentDir: true,
       dir: true,
+      dropTarget: true,
     }),
-    'tree-row active selected marked cut context current-dir is-dir',
+    'tree-row active selected marked cut context current-dir is-dir drop-target',
   )
   assert.equal(rowClassName('file-row', { active: false, dir: true }), 'file-row is-dir')
 })

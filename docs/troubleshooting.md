@@ -46,18 +46,16 @@ Dropped files above 4,000,000 bytes are rejected; the read cap inside a root is 
 
 Switching files or folders, opening Settings or the trash, changing roots, opening a temporary file, toggling edit to view and closing the window all prompt to save, discard or cancel when the draft is dirty. A conflict cancels the switch and leaves the banner on the current file.
 
-## `.vimrc` mappings or options are not applied
+## Vim mappings or options are not applied
 
-**Cause:** Vim keybindings are off, the vimrc source is not the file you edited, or an option is not supported by CodeMirror's Vim layer.
+**Cause:** Vim keybindings are off, the remap mode or keys are wrong, or the option is not supported.
 
 **Fix:**
 
-- Check Settings → Editor. Vim keybindings must be on, and the vimrc source must be the one you edited: the default `~/.vimrc`, a custom path, or pasted text.
-- The app does not read Neovim's `~/.config/nvim/init.vim` unless you point the custom path at it.
-- Options are forwarded to CodeMirror's Vim layer. `tabstop` (`ts`), `shiftwidth` (`sw`), `expandtab` (`et`) and `number` (`nu`) are applied directly; other options only work if that layer supports them. Word wrap comes from Settings → Editor, so `set wrap` and `set nowrap` are ignored.
-- Removing a mapping from the vimrc removes it from the editor the next time settings are applied.
-- Supported map commands are listed in [Features](features.md#viewing-and-editing). The `vim` badge tooltip shows the applied count and the lines that were skipped.
-- Changes apply when you leave Settings; the editor is rebuilt from the new vimrc source.
+- Check Settings → Vim. Vim keybindings must be on.
+- Remaps are stored in the app settings, not read from `~/.vimrc`. Add them in Settings → Vim with a mode, a left-hand side and a right-hand side. `<leader>` is accepted on both sides.
+- `tabstop`, `shiftwidth`, `expandtab` and line numbers are applied directly. Word wrap comes from the Settings toggle. `scrolloff`, persistent undo and the other Vim options are not supported.
+- The `vim` badge tooltip lists the leader, the clipboard targets and the remap count.
 
 ## Content search finds nothing
 

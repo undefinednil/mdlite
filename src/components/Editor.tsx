@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Compartment, EditorSelection, EditorState, type Range } from '@codemirror/state'
+import { Compartment, EditorSelection, EditorState, Transaction, type Extension, type Range } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -27,13 +27,16 @@ import {
 } from '@codemirror/language'
 import { tags } from '@lezer/highlight'
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
-import { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search'
+import { highlightSelectionMatches, openSearchPanel, search, searchKeymap } from '@codemirror/search'
 import { loadLanguageExtension } from '../lib/languages'
 import { editorKeyExtensions } from '../lib/editorKeys'
 import { editorTheme } from '../lib/editorTheme'
+import { relativeLineNumbers } from '../lib/relativeLineNumbers'
+import { scrollOffExtension } from '../lib/scrolloff'
+import { collapseSearchSelection, shouldCollapseSearchSelection } from '../lib/searchSelection'
 import { attachVim } from '../lib/vim'
 import type { RelPath } from '../../shared/types'
-import type { VimSettings } from '../lib/vimrc'
+import type { VimSettings } from '../lib/vimConfig'
 
 const highlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: '#6a737d', fontStyle: 'italic' },
@@ -133,6 +136,25 @@ function isMediaFile(file: File): boolean {
   return file.type.startsWith('image/') || file.type.startsWith('video/')
 }
 
+const relativeNumbers = relativeLineNumbers()
+
+function indentFor(settings: VimSettings): string {
+  const width = settings.shiftwidth > 0 ? settings.shiftwidth : settings.tabstop
+  return settings.expandtab ? ' '.repeat(Math.max(1, width)) : '\t'
+}
+
+function gutterExtensions(settings: VimSettings): Extension {
+  if (!settings.number) return []
+  return [
+    ...(settings.relativeNumber ? relativeNumbers : [lineNumbers()]),
+    highlightActiveLineGutter(),
+  ]
+}
+
+function indentationExtensions(settings: VimSettings): Extension {
+  return [EditorState.tabSize.of(settings.tabstop), indentUnit.of(indentFor(settings))]
+}
+
 export function Editor({
   value,
   filePath,
@@ -154,7 +176,15 @@ export function Editor({
   const onSaveRef = useRef(onSave)
   const onMediaRef = useRef(onMedia)
   const shortcutsRef = useRef(shortcuts)
+  const mappingsRef = useRef(settings.mappings)
+  const docKeyRef = useRef(filePath)
   const language = useRef(new Compartment())
+  const gutter = useRef(new Compartment())
+  const indentation = useRef(new Compartment())
+  const wrap = useRef(new Compartment())
+  const indentRef = useRef(indentFor(settings))
+  const scrollOffRef = useRef(settings.scrolloff)
+  const configured = useRef(false)
   const languageKey = filePath.match(/\.[^./\\]+$/)?.[0] ?? ''
 
   valueRef.current = value
@@ -162,17 +192,18 @@ export function Editor({
   onSaveRef.current = onSave
   onMediaRef.current = onMedia
   shortcutsRef.current = shortcuts
+  mappingsRef.current = settings.mappings
+  docKeyRef.current = filePath
+  indentRef.current = indentFor(settings)
+  scrollOffRef.current = settings.scrolloff
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     let destroyed = false
 
-    const indentWidth = settings.shiftwidth > 0 ? settings.shiftwidth : settings.tabstop
-    const indent = settings.expandtab ? ' '.repeat(Math.max(1, indentWidth)) : '\t'
-
     const extensions = [
-      ...(settings.number ? [lineNumbers(), highlightActiveLineGutter()] : []),
+      gutter.current.of(gutterExtensions(settings)),
       highlightSpecialChars(),
       history(),
       drawSelection(),
@@ -187,6 +218,7 @@ export function Editor({
       crosshairCursor(),
       highlightActiveLine(),
       highlightSelectionMatches(),
+      search({ top: true }),
       keymap.of([
         ...closeBracketsKeymap,
         ...defaultKeymap,
@@ -194,17 +226,30 @@ export function Editor({
         ...historyKeymap,
       ]),
       ...editorKeyExtensions({
-        indent,
+        getIndent: () => indentRef.current,
         vimEnabled,
         getShortcuts: () => shortcutsRef.current,
+        getMappings: () => mappingsRef.current,
+        getDocKey: () => docKeyRef.current,
       }),
       editorTheme,
-      ...(wordWrap ? [EditorView.lineWrapping] : []),
-      EditorState.tabSize.of(settings.tabstop),
-      indentUnit.of(indent),
+      scrollOffExtension(() => scrollOffRef.current),
+      wrap.current.of(wordWrap ? EditorView.lineWrapping : []),
+      indentation.current.of(indentationExtensions(settings)),
       language.current.of([]),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) onChangeRef.current(update.state.doc.toString())
+        for (const transaction of update.transactions) {
+          if (!shouldCollapseSearchSelection(transaction.annotation(Transaction.userEvent))) continue
+          const range = update.state.selection.main
+          if (range.empty) continue
+          const from = range.from
+          const to = range.to
+          queueMicrotask(() => {
+            if (!update.view.dom.isConnected) return
+            collapseSearchSelection(update.view, from, to)
+          })
+        }
       }),
       EditorView.domEventHandlers({
         paste: (event, view) => {
@@ -285,7 +330,30 @@ export function Editor({
       view.destroy()
       viewRef.current = null
     }
-  }, [settings.sourceKey, languageKey, focusRef, findRef, vimEnabled, wordWrap])
+  }, [languageKey, focusRef, findRef])
+
+  useEffect(() => {
+    if (!configured.current) {
+      configured.current = true
+      return
+    }
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: [
+        gutter.current.reconfigure(gutterExtensions(settings)),
+        indentation.current.reconfigure(indentationExtensions(settings)),
+        wrap.current.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+      ],
+    })
+  }, [
+    settings.number,
+    settings.relativeNumber,
+    settings.tabstop,
+    settings.shiftwidth,
+    settings.expandtab,
+    wordWrap,
+  ])
 
   useEffect(() => {
     const view = viewRef.current

@@ -14,6 +14,21 @@ function reducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
 }
 
+export function halfPageDelta(clientHeight: number): number {
+  return Math.max(1, Math.round(clientHeight / 2))
+}
+
+/** Where the view sits in the scrollable range, from 0 to 1. */
+export function scrollRatio(top: number, scrollHeight: number, clientHeight: number): number {
+  const max = scrollHeight - clientHeight
+  return max > 0 ? top / max : 0
+}
+
+/** The scroll offset for a remembered ratio, clamped by the element. */
+export function scrollTopAtRatio(ratio: number, scrollHeight: number, clientHeight: number): number {
+  return Math.max(0, scrollHeight - clientHeight) * ratio
+}
+
 export function createSmoothScroller(): SmoothScroller {
   let state: ScrollState | null = null
 

@@ -9,6 +9,7 @@ import {
   defaultSortDirection,
   findNode,
   flattenTree,
+  isFolderOpen,
   pruneTree,
   sortNodes,
   walkTree,
@@ -158,4 +159,12 @@ test('walks the tree to collect files, folders and every path', () => {
   const visited: string[] = []
   walkTree(tree, (entry, depth) => visited.push(`${depth}:${entry.name}`))
   assert.deepEqual(visited, ['0:docs', '1:guide.md', '1:deep', '0:root.md'])
+})
+
+test('a filtered tree starts open and follows the collapsed set', () => {
+  const docs = relPath('docs')
+  assert.equal(isFolderOpen(docs, true, new Set(), new Set()), true)
+  assert.equal(isFolderOpen(docs, true, new Set([docs]), new Set()), false)
+  assert.equal(isFolderOpen(docs, false, new Set(), new Set()), false)
+  assert.equal(isFolderOpen(docs, false, new Set([docs]), new Set([docs])), true)
 })

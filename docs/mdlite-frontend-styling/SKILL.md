@@ -32,12 +32,13 @@ mdlite has one visual language: a light, calm, document-first desktop app. The R
 | `--fg-muted` | `#6b7280` | Metadata, labels, placeholders |
 | `--accent` | `#2563eb` | Action, focus, selection |
 | `--accent-soft` | `#2563eb12` | Selected rows, active chips, focus rings |
+| `--accent-wash` | `#dbeafe` | Focused tree row |
 | `--accent-strong` | `#1d4ed8` | Primary hover and pressed states |
 | `--danger` | `#dc2626` | Destructive actions and errors |
 | `--mark` | `#f59e0b` | Dirty marker |
 | `--mono` | system monospace stack | Paths, code, key bindings |
-| `--sidebar-width` | `296px` | App sidebar |
-| `--main-width` | `100%` default | Content width; `App.tsx` turns it into the `.main-zoom` column width. Set in Settings → Editor, 50–100%. Ignored by Excalidraw, which gets `full` on `.main-body` and uses the whole main area. |
+| `--sidebar-width` | `296px` default | App sidebar; `App.tsx` overrides it from the Sidebar width setting (0 hides the sidebar) |
+| `--main-width` | `100%` default | Content width; `App.tsx` turns it into the `.main-zoom` column width. Set in Settings → Editor, 50–100%. Ignored by Excalidraw and by HTML view mode, which get `full` on `.main-body` and use the whole main area. |
 
 Status colors use the same families already in the file: green `#15803d` / `#ecfdf5`, amber `#92400e` / `#fef3c7`, red `#b91c1c` / `#fef2f2`.
 
@@ -55,7 +56,7 @@ Status colors use the same families already in the file: green `#15803d` / `#ecf
 
 ## Layout
 
-- `.app` is a full-height grid: `var(--sidebar-width) minmax(0, 1fr)`. The page itself never scrolls.
+- `.app` is a full-height grid: `var(--sidebar-width) minmax(0, 1fr)`. The page itself never scrolls. A `.sidebar-resize` strip sits on the sidebar edge; dragging it updates the Sidebar width setting, and a width of 0 hides the sidebar while leaving the strip at the left edge.
 - `.sidebar` is a flex column: 46px header, filter area, scrolling tree, footer.
 - `.main` is a flex column: 46px header on `--panel`, then a body that scrolls in view mode and clips in edit mode.
 - `.main-body` scrolls the main area and holds one `.main-zoom` wrapper. `App.tsx` measures the pane width and reads the view's cap from the stylesheet (the view root's `max-width`, or the CodeMirror content's for the editor), then sets the wrapper to the Main area width in px capped at that value and sets the body's left and right padding so that page is centred. The cap is never read from a live element width, because the element is sized from the cap. The wrapper carries the `zoom` value, so the whole main area scales together: the padding shrinks to `0` when the zoomed page fills the pane, and further zoom makes `.main-body` scroll sideways from the page's left edge. The `full` class sets both paddings to `0`; `App.tsx` adds it while an Excalidraw drawing is open, so drawings always use the full main area at 100% zoom.
@@ -86,7 +87,7 @@ Reuse these instead of new controls:
 - **Dialogs.** A 440px card on a dimmed, blurred overlay, capped to the viewport height and scrollable; a folder picker may widen to 560px. Messages are 13.5px. Actions sit right aligned. The save prompt has three actions: Save (primary), Don't save (danger), and Cancel.
 - **Folder picker.** A bordered list capped at 320px tall. Rows show an icon, a name, and a right-aligned muted monospace path for folders. The active row uses `--accent-soft`.
 - **Palette.** A 760px card capped at 70vh, a 15px search field with a bottom border only, accent-soft on the active row, and monospace content matches.
-- **Recent files.** A centered card 380–560px wide, 14vh from the top, with icon, file name, and muted directory per row.
+- **Recent files.** A centered card 380–560px wide, 14vh from the top, with icon, file name, and muted directory per row. Rows are buttons; clicking one opens it, and clicking outside closes the card. The sidebar history button opens the same card.
 - **Settings.** Use section titles in uppercase muted text. A setting row is a white bordered card with a title, one-line help, and a control. Group related rows with `.setting-list`. Number inputs use `type="number"` with min/max and an `aria-label`; they keep a text draft, and blur or Enter commits the clamped value.
 - **Find bar.** A small floating card at the top-right of the main area (54px from the top, 22px from the right), above the content: a search icon, a 200px `.text-input`, a right-aligned match count in muted tabular numbers, and previous/next/close `.icon-btn` controls. Matches in the reading view are `<mark class="find-hit">`; the active match adds `find-active` with the stronger amber background.
 - **Pen overlay.** `.pen-layer` is absolutely positioned inside `.main`, starting below the 46px header, above the content (z-index 10) and below the floating actions. The canvas fills the layer at the device pixel ratio; the toolbar is a rounded card at the top centre, grouped by thin `.pen-divider` rules: pen and eraser tools, the native colour input, Undo and Redo, Clear and Close. The pen button and the Edit pill share the fixed `.floating-actions` row at the bottom right, and the pen shows an accent fill while it is on.

@@ -1,6 +1,14 @@
+import type { FileKind } from './fileType'
+
 export const MAIN_ZOOM_MIN = 0.5
 export const MAIN_ZOOM_MAX = 3
 export const MAIN_ZOOM_STEP = 0.1
+
+// Excalidraw always fills the main area. HTML does so in view mode only; its
+// editor still respects the main width.
+export function usesFullMainWidth(kind: FileKind | null, mode: 'view' | 'edit'): boolean {
+  return kind === 'excalidraw' || (kind === 'html' && mode === 'view')
+}
 
 export function clampMainZoom(value: number): number {
   if (!Number.isFinite(value)) return 1

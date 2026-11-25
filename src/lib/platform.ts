@@ -5,3 +5,8 @@ export function revealLabel(): string {
   if (/win/i.test(platform)) return 'Show in File Explorer'
   return 'Show in file manager'
 }
+
+export function isWindowsPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return /win/i.test(`${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`)
+}

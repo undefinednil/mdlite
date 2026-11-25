@@ -70,6 +70,8 @@ test('keeps the original app shortcut defaults', () => {
   assert.equal(defaultBinding('app.toggleEdit'), 'ctrl+shift+v, ctrl+shift+e')
   assert.equal(defaultBinding('app.focusTree'), 'ctrl+h')
   assert.equal(defaultBinding('app.focusMain'), 'ctrl+l')
+  assert.equal(defaultBinding('app.recentFiles'), 'ctrl+tab')
+  assert.equal(defaultBinding('app.recentFilesBack'), 'ctrl+shift+tab')
 })
 
 test('matches the platform primary modifier', () => {
@@ -119,7 +121,8 @@ test('records the primary modifier and formats it', () => {
 
 test('reserves hardcoded and system keys', () => {
   assert.equal(isReservedBinding('mod+n'), true)
-  assert.equal(isReservedBinding('ctrl+tab'), true)
+  assert.equal(isReservedBinding('ctrl+tab'), false)
+  assert.equal(isReservedBinding('ctrl+shift+tab'), false)
   assert.equal(isReservedBinding('space'), true)
   assert.equal(isReservedBinding('tab'), true)
   assert.equal(isReservedBinding('shift+tab'), true)

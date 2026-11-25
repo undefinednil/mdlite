@@ -16,12 +16,13 @@ They talk over Tauri commands. The UI never touches the filesystem API directly.
 │     ├── FileTree       sidebar, filters and selection                    │
 │     ├── FolderView     table for the current folder                       │
 │     ├── MarkdownView   rendered Markdown                                  │
+│     ├── HtmlView       sandboxed HTML preview                             │
 │     ├── Editor         CodeMirror + Vim                                   │
 │     ├── ExcalidrawView lazy-loaded drawing canvas                         │
 │     ├── MediaView      images and binary cards                            │
 │     ├── Palette        fuzzy file finder and content search               │
 │     ├── TrashView      trash browser, restore and purge                   │
-│     ├── SettingsView   roots, editor, shortcuts, about                    │
+│     ├── SettingsView   roots, editor, vim, shortcuts, about               │
 │     └── DialogHost     confirm, prompt, save and folder dialogs           │
 │                                                                           │
 │   src/api.ts  ── invoke(command, args) ──►  Rust core                     │
@@ -39,7 +40,7 @@ They talk over Tauri commands. The UI never touches the filesystem API directly.
 
 The seam is `src/api.ts`. It exports one `Api` interface of named, typed functions. `createDesktopApi(client)` is the Tauri adapter: the injected client supplies `invoke`, `listen` and `assetUrl`, so a recording client can check command names and argument keys without a Tauri window. `api` is the production instance. `src/lib/fakeApi.ts` implements the same `Api` interface over an in-memory vault for higher-level tests.
 
-Paths cross the seam as one of two branded types: `RelPath` is root-relative and `AbsPath` is absolute. A plain string is assignable to neither. `src/lib/paths.ts` is the only module that creates them through `relPath`, `absPath` and `absolutePathFrom`, and the adapter brands every path it receives from Rust. The four absolute-path exceptions stay outside the jail: `addRoot` takes an `AbsPath` from the folder picker, `saveText` takes an `AbsPath` export target, `open` builds its absolute path inside the adapter, and the vimrc setting keeps a plain string because it also accepts `~` and an empty value.
+Paths cross the seam as one of two branded types: `RelPath` is root-relative and `AbsPath` is absolute. A plain string is assignable to neither. `src/lib/paths.ts` is the only module that creates them through `relPath`, `absPath` and `absolutePathFrom`, and the adapter brands every path it receives from Rust. The three absolute-path exceptions stay outside the jail: `addRoot` takes an `AbsPath` from the folder picker, `saveText` takes an `AbsPath` export target, and `open` builds its absolute path inside the adapter.
 
 If a new operation is needed, add the command in Rust, register it in `generate_handler!`, add one function to `Api` and the Tauri adapter, add it to the fake adapter, and call it from the UI.
 
@@ -47,7 +48,7 @@ If a new operation is needed, add the command in Rust, register it in `generate_
 
 ## Commands
 
-There are 21 commands:
+There are 22 commands:
 
 | Group | Commands |
 |---|---|
@@ -57,15 +58,14 @@ There are 21 commands:
 | File operations | `create_entry`, `rename_entry`, `transfer_entry`, `trash_entry`, `trash_list`, `trash_purge`, `restore_entry` |
 | Search | `search_grep` |
 | Media | `upload` |
-| Editor support | `vimrc` |
 | Settings | `settings_get`, `settings_set` |
 | System | `open_path`, `reveal_path`, `open_url` |
 
 `tree` returns the whole root at once as nested nodes. The UI filters and sorts this snapshot in memory, which is why typing in the tree filter does not touch the disk.
 
-`tree`, `read_file`, `write_file`, `open_path`, `reveal_path`, `open_url`, `search_grep`, `upload` and the seven file operations are `#[tauri::command(async)]`. `save_text_file` is synchronous. The config-only commands (`info`, `root_add`, `root_set`, `root_remove`, `vimrc`, `settings_get`, `settings_set`) are also synchronous.
+`tree`, `read_file`, `write_file`, `open_path`, `reveal_path`, `open_url`, `search_grep`, `upload` and the seven file operations are `#[tauri::command(async)]`. `save_text_file` is synchronous. The config-only commands (`info`, `root_add`, `root_set`, `root_remove`, `settings_get`, `settings_set`) are also synchronous.
 
-Only four places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target), `open_path` (hand a file to the operating system) and the vimrc path setting. Every other operation that touches a file takes a root-relative path and resolves it with `paths::safe_join`. A leading slash means the root on purpose.
+Only three places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target) and `open_path` (hand a file to the operating system). Every other operation that touches a file takes a root-relative path and resolves it with `paths::safe_join`. A leading slash means the root on purpose.
 
 `read_file`, `write_file`, `create_entry`, `rename_entry`, `transfer_entry`, `trash_entry` and `restore_entry` return the canonical root-relative path of the file they touched. The UI uses that returned path for selection and remapping, so a renamed or moved file keeps one identity even when the request was written with a leading slash or a `.` segment. The command list and payload field names do not change.
 
@@ -112,6 +112,7 @@ The seam normalises every rejection into one `ApiError` with `kind`, `message` a
 - **Uploads.** Only listed image and video extensions are accepted, the decoded payload is capped at 60 MB and the file name is reduced to a safe stem.
 - **Markdown sanitizing.** Markdown is rendered with raw HTML enabled (`markdown-it` `html: true`), then passed through DOMPurify before insertion with `dangerouslySetInnerHTML`. Scripts, event handlers and dangerous URLs are removed, while images, video, audio, tables and Mermaid markup are kept. Mermaid runs with `securityLevel: "strict"`.
 - **Remote content.** The app has no server and no HTTP API, but raw HTML and plain URLs turned into links in a note can load remote images. The window uses `csp: null` and the asset protocol scope is `**`, because roots can be anywhere on disk and notes can point at media beside them. The sanitizer is the content boundary; revisit CSP and asset scope before changing the Markdown pipeline.
+- **HTML preview.** `.html` and `.htm` open in a sandboxed iframe with an opaque origin. The app renders the saved source with `srcdoc`, adds a `<base>` for the asset directory so relative CSS and classic scripts still load, and injects a small bridge. The sandbox omits `allow-same-origin`, so the page cannot read other files through the asset protocol or call Tauri commands. ES modules, `fetch` and storage do not work; the bridge forwards the app's scroll keys and shortcuts, and reports the scroll ratio back to the app. The preview takes focus on open so the page's own keys keep working.
 
 ## Storage
 
@@ -127,13 +128,13 @@ The seam normalises every rejection into one `ApiError` with `kind`, `message` a
 | Trash | Flat entries at `<root>/.mdlite-trash/<name>`, with `-<timestamp>` appended only when the name is already taken. A hidden `.mdlite-meta-<hash>.json` beside each entry stores the original path and deletion time. |
 | Uploaded media | `<note folder>/images/`; `<root>/images/` for a temporary file |
 | Table column widths | webview `localStorage`, key `mdlite:table:<file>:<index>` |
-| Vim settings | one source chosen in Settings: `~/.vimrc`, a custom path, or pasted text; read up to 200,000 characters |
+| Vim settings | stored in the app config: leader key, clipboard targets, line numbers, indentation, search and up to 200 remaps |
 | Scroll position | in memory, one ratio per open file |
 | Recents and undo | in memory, for the current session |
 
 `trash_list` reads the metadata. When metadata is missing, the entry shows `original path unknown` and the trash browser asks for a relative restore path. Restoring, renaming or moving onto an existing path returns `exists`; choose another name or destination.
 
-Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. `mainWidth` defaults to 100 and is clamped to 50–100. `App.tsx` measures the main pane and reads the current view's cap from the stylesheet (the view root's `max-width`, or the CodeMirror content's when the view is the editor), then sets the `.main-zoom` wrapper to the smaller of the two in px and sets matching horizontal padding on `.main-body` to centre it, so the setting affects the folder view, editor, Markdown view, trash and Settings. The cap is only ever read from a CSS value, never from a live element width, because the element is sized from the cap. The same wrapper carries the main-area zoom: `src/lib/mainZoom.ts` holds the limits and the layout math, and when the zoomed page outgrows the pane the padding reaches `0` and `.main-body` scrolls sideways from the page's left edge. An open Excalidraw drawing adds the `full` class to `.main-body` and renders at 100% zoom across the whole main area width.
+Editor settings are `vimEnabled`, `vimLeader`, the three clipboard targets, `vimKeepSelection`, `vimRemaps`, `scrollOff`, `lineNumbers`, `tabSize`, `indentWidth`, `insertSpaces`, `ignoreCase`, `smartCase`, `wordWrap`, `mainWidth` and `sidebarWidth`. The Vim-derived settings (`lineNumbers`, `scrollOff`, `tabSize`, `indentWidth`, `insertSpaces`, `ignoreCase`, `smartCase`, the clipboard targets and the remaps) apply only while `vimEnabled` is true; `vimConfig.ts` returns fixed defaults otherwise. `mainWidth` defaults to 100 and is clamped to 50–100. `sidebarWidth` defaults to 296, is 0 (hidden) or clamped to 230–600, and 0 hides the sidebar; `App.tsx` writes it to the `--sidebar-width` CSS variable and the drag handle saves the same setting. `App.tsx` measures the main pane and reads the current view's cap from the stylesheet (the view root's `max-width`, or the CodeMirror content's when the view is the editor), then sets the `.main-zoom` wrapper to the smaller of the two in px and sets matching horizontal padding on `.main-body` to centre it, so the setting affects the folder view, editor, Markdown view, trash and Settings. The cap is only ever read from a CSS value, never from a live element width, because the element is sized from the cap. The same wrapper carries the main-area zoom: `src/lib/mainZoom.ts` holds the limits and the layout math, and when the zoomed page outgrows the pane the padding reaches `0` and `.main-body` scrolls sideways from the page's left edge. An open Excalidraw drawing or an HTML preview in view mode adds the `full` class to `.main-body` and renders at 100% zoom across the whole main area width.
 
 ## Front-end layout
 
@@ -148,6 +149,7 @@ Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. 
 | `src/components/DialogHost.tsx` | Confirm, prompt, save and folder dialogs |
 | `src/components/Editor.tsx` | CodeMirror editor, media drop and Vim wiring |
 | `src/components/ExcalidrawView.tsx` | Lazy-loaded Excalidraw canvas |
+| `src/components/HtmlView.tsx` | Sandboxed HTML preview |
 | `src/components/FileTree.tsx` | Sidebar tree, filters, selection and context menu |
 | `src/components/FindBar.tsx` | Find bar for the reading view: input, match count, previous/next and close |
 | `src/components/FolderView.tsx` | Table for the current folder |
@@ -158,7 +160,7 @@ Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. 
 | `src/components/SettingsView.tsx` | Roots, editor, shortcuts and about pages |
 | `src/components/TrashView.tsx` | Trash browser, restore and permanent delete |
 | `src/lib/dialogs.ts` | Promise-based confirm, prompt, save and folder dialogs |
-| `src/lib/editorKeys.ts` | Tab, page and screen-edge key handling inside CodeMirror |
+| `src/lib/editorKeys.ts` | Tab handling, half-page scroll, page and screen-edge commands, and the per-view mapping router inside CodeMirror |
 | `src/lib/editorTheme.ts` | CodeMirror theme, including the focused-editor outline |
 | `src/lib/fakeApi.ts` | In-memory adapter that implements `Api` for tests |
 | `src/lib/fileType.ts` | One extension table: kind, editability, language, filter group, media, drop safety, icons and icon tones |
@@ -174,7 +176,7 @@ Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. 
 | `src/lib/platform.ts` | Platform label for the Reveal action (Finder, File Explorer, file manager) |
 | `src/lib/paths.ts` | The only creator of branded relative and absolute paths, plus path arithmetic, glob matching and content hashing |
 | `src/lib/row.ts` | Row state classes, leading slots (with `rowLeading`, because only folder rows have a twisty slot), trailing text, activation and keyboard moves |
-| `src/lib/scroll.ts` | Smooth scrolling with reduced-motion support |
+| `src/lib/scroll.ts` | Smooth scrolling with reduced-motion support, and the half-page step |
 | `src/lib/selection.ts` | Cursor, anchor and marked rows for the tree, folder table and palette |
 | `src/lib/selftest.ts` | Packaged self-test and JSON report |
 | `src/lib/shortcutE2e.ts` | Packaged self-test suite for every keyboard shortcut |
@@ -186,8 +188,11 @@ Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. 
 | `src/lib/useSelection.ts` | Selection snapshot bridge to React |
 | `src/lib/useSession.ts` | Session snapshot bridge to React |
 | `src/lib/useSnapshot.ts` | The single `useSyncExternalStore` adapter the three snapshot hooks share |
-| `src/lib/vim.ts` | Vim `:w`, save and system clipboard bridge, plus the key router that completes multi-key mappings whose first key is also a normal-mode command |
-| `src/lib/vimrc.ts` | `.vimrc` parser and applied settings |
+| `src/lib/vim.ts` | Vim `:w`, save and system clipboard bridge, engine options and mapping registration || `src/lib/vimConfig.ts` | Derives the editor settings the Vim layer reads from the app settings |
+| `src/lib/vimKeys.ts` | Normalizes key notation and compiles the remap table |
+| `src/lib/vimKeymap.ts` | Converts key events and decides when a multi-key mapping buffers, dispatches or flushes |
+| `src/lib/documentUrl.ts` | Builds the asset URL an HTML preview iframe loads |
+| `src/lib/htmlDocument.ts` | Builds the HTML preview srcdoc with its base URL and scroll bridge |
 | `src/lib/vimScroll.ts` | Vim half-page coordinate fallback for unrendered target lines |
 | `src/**/*.test.ts` | TypeScript unit tests; the glob in the `test` script discovers every file |
 | `shared/types.ts` | Types shared by the UI and tooling |
@@ -203,7 +208,7 @@ Editor settings are `vimEnabled`, `wordWrap`, `mainWidth` and the vimrc source. 
 | `src-tauri/src/files.rs` | Read, write, conflict check, create, rename, transfer, trash, restore, upload |
 | `src-tauri/src/paths.rs` | Path jail, canonical relative paths, ignore rules, media name checks |
 | `src-tauri/src/search.rs` | `rg` JSON stream and the pure-Rust fallback |
-| `src-tauri/src/settings.rs` | App settings model, validation and vimrc resolution |
+| `src-tauri/src/settings.rs` | App settings model and validation |
 | `src-tauri/src/state.rs` | Combined config, active root, config path, home directory helpers |
 | `src-tauri/src/tree.rs` | Recursive tree build with a 20,000-entry budget |
 | `src-tauri/src/watch.rs` | Recursive watcher, debounce and `fs-change` event |

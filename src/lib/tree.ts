@@ -15,6 +15,16 @@ export interface TreeRow {
   depth: number
 }
 
+/** A filtered tree starts open; the normal tree follows the expanded set. */
+export function isFolderOpen(
+  path: RelPath,
+  filtered: boolean,
+  collapsed: ReadonlySet<RelPath>,
+  expanded: ReadonlySet<RelPath>,
+): boolean {
+  return filtered ? !collapsed.has(path) : expanded.has(path)
+}
+
 export function defaultSortDirection(key: TreeSortKey): TreeSortDirection {
   return key === 'modified' ? 'desc' : 'asc'
 }

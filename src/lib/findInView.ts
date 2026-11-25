@@ -7,17 +7,25 @@ export function clearFindHits(root: HTMLElement) {
   root.normalize()
 }
 
-export function markFindHits(root: HTMLElement, query: string): HTMLElement[] {
-  const needle = query.trim().toLowerCase()
+// Smart case means a query with an upper-case letter is matched exactly.
+export function findCaseSensitive(query: string, ignoreCase: boolean, smartCase: boolean): boolean {
+  if (!ignoreCase) return true
+  return smartCase && /[A-Z]/.test(query)
+}
+
+export function markFindHits(root: HTMLElement, query: string, caseSensitive = false): HTMLElement[] {
+  const needle = query.trim()
   clearFindHits(root)
   if (!needle) return []
+  const compare = caseSensitive ? needle : needle.toLowerCase()
 
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const nodes: Text[] = []
   while (walker.nextNode()) {
     const node = walker.currentNode as Text
     const value = node.nodeValue
-    if (!value || !value.toLowerCase().includes(needle)) continue
+    const haystack = value ? (caseSensitive ? value : value.toLowerCase()) : ''
+    if (!haystack || !haystack.includes(compare)) continue
     if (node.parentElement?.closest(FIND_SKIP)) continue
     nodes.push(node)
   }
@@ -25,20 +33,20 @@ export function markFindHits(root: HTMLElement, query: string): HTMLElement[] {
   const hits: HTMLElement[] = []
   for (const node of nodes) {
     const value = node.nodeValue ?? ''
-    const lower = value.toLowerCase()
+    const haystack = caseSensitive ? value : value.toLowerCase()
     const fragment = document.createDocumentFragment()
     let cursor = 0
-    let index = lower.indexOf(needle)
+    let index = haystack.indexOf(compare)
     if (index === -1) continue
     while (index !== -1) {
       if (index > cursor) fragment.append(value.slice(cursor, index))
       const mark = document.createElement('mark')
       mark.className = 'find-hit'
-      mark.textContent = value.slice(index, index + needle.length)
+      mark.textContent = value.slice(index, index + compare.length)
       fragment.append(mark)
       hits.push(mark)
-      cursor = index + needle.length
-      index = lower.indexOf(needle, cursor)
+      cursor = index + compare.length
+      index = haystack.indexOf(compare, cursor)
     }
     if (cursor < value.length) fragment.append(value.slice(cursor))
     node.replaceWith(fragment)

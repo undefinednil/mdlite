@@ -12,9 +12,9 @@ import type {
   SettingsResponse,
   TrashEntry,
   TreeNode,
-  VimrcResponse,
 } from '../shared/types'
 import { absPath, absolutePathFrom, relPath } from './lib/paths'
+import { documentUrl } from './lib/documentUrl'
 
 export const API_ERROR_KINDS = [
   'bad_request',
@@ -127,6 +127,7 @@ export interface Api {
   openUrl(url: string): Promise<void>
   grep(query: string, opts?: GrepOptions): Promise<GrepResponse>
   rawUrl(path: RelPath): string
+  htmlUrl(path: RelPath): string
   upload(dir: RelPath, file: File): Promise<{ path: RelPath }>
   create(path: RelPath, type: 'file' | 'dir'): Promise<{ path: RelPath }>
   rename(path: RelPath, name: string): Promise<{ path: RelPath }>
@@ -135,7 +136,6 @@ export interface Api {
   trashList(): Promise<TrashEntry[]>
   purgeTrash(path: RelPath): Promise<void>
   restore(from: RelPath, to: RelPath): Promise<{ path: RelPath }>
-  vimrc(): Promise<VimrcResponse>
   settings(): Promise<SettingsResponse>
   saveSettings(settings: AppSettings): Promise<SettingsResponse>
   subscribeChanges(handler: (paths: RelPath[]) => void): () => void
@@ -255,6 +255,8 @@ export function createDesktopApi(client: ApiClient = tauriClient): Api {
 
     rawUrl: (path: RelPath) => client.assetUrl(absolutePath(path)),
 
+    htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
+
     upload: async (dir: RelPath, file: File) => {
       const data = await toBase64(file)
       const saved = await call<string>('upload', { dir, name: file.name, data })
@@ -283,8 +285,6 @@ export function createDesktopApi(client: ApiClient = tauriClient): Api {
 
     restore: (from: RelPath, to: RelPath) =>
       call<string>('restore_entry', { from, to }).then((next) => ({ path: relPath(next) })),
-
-    vimrc: () => call<VimrcResponse>('vimrc'),
 
     settings: () =>
       call<SettingsResponse>('settings_get').then((data) => ({

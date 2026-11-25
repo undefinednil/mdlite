@@ -7,10 +7,10 @@ import type {
   RootEntry,
   TreeNode,
   TrashEntry,
-  VimrcResponse,
 } from '../../shared/types'
 import { ApiError, type Api, type GrepOptions } from '../api'
 import { absPath, absolutePathFrom, baseName, contentHash, dirname, relPath } from './paths'
+import { documentUrl } from './documentUrl'
 import { defaultAppSettings } from './settings'
 
 const TRASH_DIR = '.mdlite-trash'
@@ -50,7 +50,6 @@ export interface FakeApiOptions {
   dirs?: string[]
   settings?: AppSettings
   settingsPath?: string
-  vimrc?: VimrcResponse
   now?: () => number
 }
 
@@ -80,7 +79,6 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
   let activeRootId = options.activeRootId ?? roots[0]?.id ?? ''
   let currentRootPath = roots.find((root) => root.id === activeRootId)?.path ?? absPath('')
   let settings = clone(options.settings ?? defaultAppSettings)
-  let vimrc = clone(options.vimrc ?? { path: '~/.vimrc', exists: false, content: '' })
   let lastMtime = 0
   const now = options.now ?? (() => Date.now())
   const vaults = new Map<string, Map<string, FakeEntry>>()
@@ -400,6 +398,8 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
 
     rawUrl: (path: RelPath) => `fake://${absolutePath(path)}`,
 
+    htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
+
     upload: async (dir: RelPath, file: File) => {
       const dirPath = normalizePath(dir)
       const target = dirPath ? vault().get(dirPath) : { kind: 'dir' as const }
@@ -550,8 +550,6 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       emit([source, target])
       return { path: target }
     },
-
-    vimrc: async () => ({ ...vimrc }),
 
     settings: async () => ({
       settings: clone(settings),

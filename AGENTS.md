@@ -45,13 +45,14 @@ Read `docs/mdlite-frontend-styling/SKILL.md` before any UI change. It is the sty
 
 ## Editor and Markdown
 
-- CodeMirror 6 lives in `src/components/Editor.tsx`. The view is created once per editor instance; the language is swapped through the `Compartment`. The React `key` is the vimrc source plus the Vim switch, so those changes rebuild the editor. Do not recreate the view on every keystroke.
+- CodeMirror 6 lives in `src/components/Editor.tsx`. The view is created once per editor instance; the language, gutter, indentation and wrap are swapped through `Compartment`s. The React key is only the Vim switch, so toggling Vim rebuilds the editor. Do not recreate the view on every keystroke.
 - The editor reports changes through `onChange` only. There is no save on blur and no save timer. Saves come from the save shortcut, Vim `:w`, the `save` choice in `askSave`, and the explicit Overwrite in the conflict banner.
 - `App.tsx` computes `dirty` by comparing the draft with `doc.content`. Before leaving a file, a folder, Settings, the trash, a root or the window, use `confirmSave`, which calls `askSave` and honours `save` / `discard` / `cancel`. A cancelled or failed save keeps the current view.
 - Saving sends mtime, size and `contentHash`, and passes `force` only for an explicit overwrite. Do not weaken this conflict check.
 - Markdown is rendered by `src/lib/markdown.ts` with `markdown-it` (`html: true`) and must pass through `DOMPurify.sanitize` before `dangerouslySetInnerHTML`. Keep the video and audio entries in `SANITIZE_OPTIONS` in step with what the renderer emits.
 - Mermaid runs with `securityLevel: 'strict'`. Do not change it.
 - The window uses `csp: null` and asset protocol scope `**` because roots can be anywhere on disk and notes reference media beside them. That makes the sanitizer the content boundary. Keep it in place; revisit CSP and asset scope in `src-tauri/tauri.conf.json` before expanding what Markdown can load.
+- HTML preview runs in a sandboxed iframe with an opaque origin (`sandbox` without `allow-same-origin`). Do not add `allow-same-origin`, and do not expose Tauri commands or the app DOM to the iframe.
 
 ## Rust core
 
@@ -60,9 +61,10 @@ Read `docs/mdlite-frontend-styling/SKILL.md` before any UI change. It is the sty
 - Mark a command `#[tauri::command(async)]` when it touches the filesystem or runs a process: tree, reads and writes, search, upload, file operations. Config-only commands stay sync. `save_text_file` is the existing exception because it writes an export target chosen in a native dialog.
 - Every response struct uses `#[serde(rename_all = "camelCase")]` when a field has more than one word. Update `shared/types.ts` in the same change.
 - Commands that work inside a root take a root-relative path and resolve it with `paths::safe_join`. Never join user input to the root by hand. A leading slash means the root, on purpose.
-- Only four places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target), `open_path` (hand a file to the OS) and the vimrc path setting. Do not add a fifth.
+- Only three places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target) and `open_path` (hand a file to the OS). Do not add a fourth.
 - Config writes stay atomic: temp file, `sync_all`, rename, owner-only permissions on Unix (`Config::persist`). Never write `mdlite.json` in place.
-- Keep the existing caps and debounce unless the change is about them: 8 MiB file read, 4,000,000-byte temporary drop, 1 MiB conflict preview, 60 MB upload, 20,000 tree entries, 120 files / 6 matches per file / 400 total for search, 2 MB fallback search file, 200,000 vimrc characters, 250 ms watcher debounce.
+- Old config files must keep loading. Every settings field has a serde default, missing fields fall back to `AppSettings::default()`, and a config must never be rejected just because it predates a newer key. Extend the legacy config tests (`reads_legacy_config_shape` and `reads_settings_with_missing_fields`) when the config shape changes.
+- Keep the existing caps and debounce unless the change is about them: 8 MiB file read, 4,000,000-byte temporary drop, 1 MiB conflict preview, 60 MB upload, 20,000 tree entries, 120 files / 6 matches per file / 400 total for search, 2 MB fallback search file, 200 Vim remaps, 250 ms watcher debounce.
 - Rename-like operations must use `assert_name`: no empty name, `.` or `..`, no slash or backslash, no leading dot, at most 200 bytes. `create_entry` is the exception: it takes a root-relative path and creates missing parent folders, so nested creation works.
 - A new file operation must stay inside the root, including through symlinks, and must handle a missing parent the same way its neighbours do.
 
@@ -120,6 +122,7 @@ Each of these covers a bug this app has already had. Check them before reporting
 - Is new CSS in `src/styles.css`, using `:root` tokens, with state in its own class?
 - Are icon-only buttons labelled, and are controls real buttons or labelled inputs?
 - If Markdown changed, does it still pass through DOMPurify, and is Mermaid still strict?
+- Is the HTML iframe still sandboxed without `allow-same-origin`?
 - Is a dirty file still handled through `confirmSave` before the view changes?
 - If a cap or debounce changed, is that the point of the change?
 - Does a new test file match `src/**/*.test.ts`, so `npm test` discovers it?

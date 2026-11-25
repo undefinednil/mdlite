@@ -9,10 +9,11 @@ const DATA = ['json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'csv', 'tsv', 'xml'
 const CODE = [
   'txt', 'env', 'conf', 'cfg',
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'go', 'php', 'py', 'rb', 'rs', 'java',
-  'kt', 'swift', 'css', 'scss', 'html', 'sh', 'bash', 'zsh',
+  'kt', 'swift', 'css', 'scss', 'sh', 'bash', 'zsh',
   'diff', 'patch', 'log', 'tf', 'proto', 'graphql', 'vue', 'svelte',
   'gitignore', 'cookies', 'lock',
 ]
+const HTML = ['html', 'htm']
 
 function path(extension: string): string {
   return `notes.${extension}`
@@ -94,6 +95,21 @@ test('code extensions are editable and grouped as code', () => {
   assert.equal(fileType(path('sh')).iconTone, 'tone-shell')
   assert.equal(fileType(path('ts')).icon, 'code')
   assert.equal(fileType(path('ts')).iconTone, 'tone-code')
+})
+
+test('html extensions are editable and render as HTML', () => {
+  for (const extension of HTML) {
+    const type = fileType(path(extension))
+    assert.equal(type.kind, 'html', extension)
+    assert.equal(type.group, 'code', extension)
+    assert.equal(type.language, 'html', extension)
+    assert.equal(type.editable, true, extension)
+    assert.equal(type.droppable, true, extension)
+    assert.equal(type.media, false, extension)
+    assert.equal(type.icon, 'code', extension)
+    assert.equal(type.iconTone, 'tone-code', extension)
+  }
+  assert.equal(formatKind('page.html'), 'HTML')
 })
 
 test('language names come from the same table', () => {

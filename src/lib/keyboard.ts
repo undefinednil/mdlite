@@ -3,6 +3,7 @@ export interface AppShortcutContext {
   mac: boolean
   paletteOpen: boolean
   settingsOpen: boolean
+  trashOpen: boolean
   cycleOpen: boolean
   save: boolean
   findFile: boolean
@@ -16,6 +17,8 @@ export interface AppShortcutContext {
 export function appShortcutAllowed(event: KeyboardEvent, context: AppShortcutContext): boolean {
   if (event.isComposing || event.repeat) return false
   if (!(event.metaKey || event.ctrlKey || event.altKey)) return false
+
+  if ((context.settingsOpen || context.trashOpen) && context.closeFile) return true
 
   const inEditor = Boolean(context.target?.closest('.cm-editor'))
   const inField =

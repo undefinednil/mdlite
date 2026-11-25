@@ -75,17 +75,25 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `paths.test.ts` covers path helpers and remapping.
 - `scroll.test.ts` covers smooth-scroller accumulation and clamping.
 - `shortcuts.test.ts` covers the shortcut catalogue, binding parser and matcher.
-- `vimrc.test.ts` and `vimMapping.test.ts` cover vimrc parsing and key routing, including leader mappings.
+- `vimConfig.test.ts` and `vimMapping.test.ts` cover the settings derived for the editor and key routing, including leader mappings.
+- `vimKeys.test.ts` covers key notation, modifier order and remap compilation.
+- `vimKeymap.test.ts` covers key conversion and the mapping prefix buffer.
+- `scrolloff.test.ts` covers the cursor-surrounding-lines adjustment.
 - `vim.test.ts` covers Vim clipboard registers.
 - `keyboard.test.ts` covers the app-level shortcut guard.
 - `editorKeys.test.ts` covers editor key handling with `jsdom`.
 - `editorTheme.test.ts` covers the focused-editor outline with `jsdom`.
 - `findInView.test.ts` covers reading-view find marking, clearing and the active match.
 - `mainZoom.test.ts` covers the main-area zoom steps, wheel and centred page layout.
+- `cycle.test.ts` covers the recent-file menu keys: the configured next/previous bindings step, Enter opens and Escape cancels.
+- `inputKeys.test.ts` covers the Ctrl+U clear-input key and which text controls it applies to.
+- `sidebar.test.ts` covers the sidebar width clamp and the 0-hidden state.
+- `scroll.test.ts` covers the smooth scroller steps and the ratio used to remember a file's position.
 - `pageWidth.test.ts` covers reading the page cap from the stylesheet.
 - `pen.test.ts` covers pen availability, stroke history with undo and redo, the whole-stroke eraser and point mapping.
 - `platform.test.ts` covers the Reveal label per platform.
 - `markdown.test.ts` covers link rewriting, Mermaid zoom and the Markdown pipeline with `jsdom`.
+- `htmlDocument.test.ts` covers the preview base URL, the injected scroll bridge and the key forwarding rules.
 - `vimScroll.test.ts` covers the Vim half-page scroll when the target line is outside the rendered viewport.
 - `api.test.ts` covers command mapping, error normalization and the injected desktop client.
 - `fakeApi.test.ts` covers the fake adapter contract.
@@ -112,7 +120,7 @@ This catches target-specific code errors but does not produce an installer. Buil
 
 ## Self-test
 
-The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle and Escape. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
+The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle and button, tree drag-move, page close, sidebar width, Ctrl+U and Escape. On macOS the runner brings the spawned window to the front; a background webview throttles timers, and the self-test would not finish. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
 
 The manual steps remain useful when you want to inspect the full report:
 
@@ -138,7 +146,7 @@ The manual steps remain useful when you want to inspect the full report:
    ./src-tauri/target/release/bundle/macos/mdlite.app/Contents/MacOS/mdlite
    ```
 
-4. Read `/tmp/mdlite-selftest-vault/temp/__selftest.json`. `runSelfTest` calls `info`, `tree`, then `read` and `rawUrl` only when the tree has a file, `grep`, `assetImage`, `settings`, `vimrc`, `write`, `dialogs`, and a `ui` block with tree rows, folder rows and the brand text. The `shortcuts` array records one `{ id, pass, detail }` entry for every shortcut check.
+4. Read `/tmp/mdlite-selftest-vault/temp/__selftest.json`. `runSelfTest` calls `info`, `tree`, then `read` and `rawUrl` only when the tree has a file, `grep`, `assetImage`, `settings`, `write`, `dialogs`, and a `ui` block with tree rows, folder rows and the brand text. The `shortcuts` array records one `{ id, pass, detail }` entry for every shortcut check.
 
 5. Quit the app, delete the temporary vault and rebuild without the flag:
 

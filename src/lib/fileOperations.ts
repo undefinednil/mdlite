@@ -62,7 +62,7 @@ export interface FileOperations {
   copy(path: RelPath): FileOperationResult
   create(dir: RelPath): Promise<FileOperationResult>
   rename(path: RelPath): Promise<FileOperationResult>
-  move(targets: RelPath[]): Promise<FileOperationResult>
+  move(targets: RelPath[], destination?: RelPath): Promise<FileOperationResult>
   trash(targets: RelPath[]): Promise<FileOperationResult>
   paste(dir: RelPath): Promise<FileOperationResult>
   undo(): Promise<FileOperationResult>
@@ -296,7 +296,10 @@ export function createFileOperations(ports: FileOperationPorts): FileOperations 
     }
   }
 
-  const move = async (targets: RelPath[]): Promise<FileOperationResult> => {
+  const move = async (
+    targets: RelPath[],
+    requested?: RelPath,
+  ): Promise<FileOperationResult> => {
     if (!acquire()) return idle()
     const root = ports.rootId()
     const list = [...targets]
@@ -304,13 +307,21 @@ export function createFileOperations(ports: FileOperationPorts): FileOperations 
       if (!list.length) return release(idle())
       const blocked = (path: RelPath) =>
         list.some((target) => path === target || path.startsWith(`${target}/`))
-      const choices = ports.folders().filter((folder) => !blocked(folder.path))
-      const destination = await ports.dialogs.askFolder(
-        list.length === 1 ? `Move "${list[0]}" to…` : `Move ${list.length} items to…`,
-        choices,
-        dirname(list[0]),
-      )
+      let destination: RelPath | null
+      if (requested === undefined) {
+        const choices = ports.folders().filter((folder) => !blocked(folder.path))
+        destination = await ports.dialogs.askFolder(
+          list.length === 1 ? `Move "${list[0]}" to…` : `Move ${list.length} items to…`,
+          choices,
+          dirname(list[0]),
+        )
+      } else {
+        destination = requested
+      }
       if (destination === null) return release(idle())
+      if (blocked(destination)) {
+        return release(failure(new Error('cannot move an item into itself')))
+      }
       const moves = list
         .map((from) => ({ from, to: joinPath(destination, baseName(from)) }))
         .filter((item) => item.to !== item.from)

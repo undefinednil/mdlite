@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { JSDOM } from 'jsdom'
+import type { VimMapping, VimSettings } from './vimConfig'
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true })
 const window = dom.window as unknown as Window & typeof globalThis
@@ -65,16 +66,49 @@ type EditorViewType = import('@codemirror/view').EditorView
 
 const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
-const { vim } = await import('@replit/codemirror-vim')
 const { applyVimSettings } = await import('./vim')
-const { parseVimrc } = await import('./vimrc')
+const { editorKeyExtensions } = await import('./editorKeys')
+const { compileRemaps } = await import('./vimKeys')
 
-function open(text: string): EditorViewType {
-  applyVimSettings(parseVimrc(text, 'inline'), true)
+function settings(mappings: VimMapping[]): VimSettings {
+  return {
+    source: 'test',
+    sourceKey: JSON.stringify(mappings),
+    exists: true,
+    leader: ' ',
+    options: {},
+    mappings,
+    skipped: [],
+    applied: mappings.length,
+    tabstop: 8,
+    shiftwidth: 8,
+    expandtab: false,
+    number: true,
+    relativeNumber: false,
+    scrolloff: 0,
+    yankTarget: 'unnamed',
+    deleteTarget: 'unnamed',
+    pasteSource: 'unnamed',
+    keepVisualSelection: false,
+  }
+}
+
+function mapping(lhs: string, rhs: string): VimMapping {
+  return { lhs, rhs, recursive: false }
+}
+
+function open(mappings: VimMapping[]): EditorViewType {
+  applyVimSettings(settings(mappings), true)
   return new EditorView({
     state: EditorState.create({
       doc: 'alpha\nbeta\ngamma',
-      extensions: [vim()],
+      extensions: editorKeyExtensions({
+        getIndent: () => '\t',
+        vimEnabled: true,
+        getShortcuts: () => ({}),
+        getMappings: () => mappings,
+        getDocKey: () => '',
+      }),
     }),
     parent: document.body,
   })
@@ -88,11 +122,11 @@ function press(view: EditorViewType, key: string): KeyboardEvent {
 
 function close(view: EditorViewType) {
   view.destroy()
-  applyVimSettings(parseVimrc('', 'inline'), false)
+  applyVimSettings(settings([]), false)
 }
 
 test('a space leader mapping runs from normal mode', () => {
-  const view = open('let mapleader = " "\nnnoremap <leader>d dd\n')
+  const view = open([mapping('<Space>d', 'dd')])
   const event = press(view, ' ')
   assert.equal(event.defaultPrevented, true)
   press(view, 'd')
@@ -101,7 +135,7 @@ test('a space leader mapping runs from normal mode', () => {
 })
 
 test('a comma leader mapping runs from normal mode', () => {
-  const view = open('let mapleader = ","\nnnoremap <leader>d dd\n')
+  const view = open([mapping(',d', 'dd')])
   press(view, ',')
   press(view, 'd')
   assert.equal(view.state.doc.toString(), 'beta\ngamma')
@@ -109,7 +143,7 @@ test('a comma leader mapping runs from normal mode', () => {
 })
 
 test('a backslash leader mapping still runs', () => {
-  const view = open('nnoremap <leader>d dd\n')
+  const view = open([mapping('\\d', 'dd')])
   press(view, '\\')
   press(view, 'd')
   assert.equal(view.state.doc.toString(), 'beta\ngamma')
@@ -117,7 +151,7 @@ test('a backslash leader mapping still runs', () => {
 })
 
 test('a longer leader mapping completes through the router', () => {
-  const view = open('let mapleader = " "\nnnoremap <leader>ss dd\n')
+  const view = open([mapping('<Space>ss', 'dd')])
   press(view, ' ')
   press(view, 's')
   press(view, 's')
@@ -125,8 +159,16 @@ test('a longer leader mapping completes through the router', () => {
   close(view)
 })
 
+test('a remap compiled from the settings table runs', () => {
+  const view = open(compileRemaps([{ mode: 'normal', lhs: '<leader>d', rhs: 'dd' }], 'Space'))
+  press(view, ' ')
+  press(view, 'd')
+  assert.equal(view.state.doc.toString(), 'beta\ngamma')
+  close(view)
+})
+
 test('a leader without a matching follow-up keeps the default command', () => {
-  const view = open('let mapleader = " "\nnnoremap <leader>d dd\n')
+  const view = open([mapping('<Space>d', 'dd')])
   press(view, ' ')
   press(view, 'x')
   assert.equal(view.state.doc.toString(), 'apha\nbeta\ngamma')

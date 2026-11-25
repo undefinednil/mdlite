@@ -10,6 +10,7 @@ export interface RowState {
   context?: boolean
   currentDir?: boolean
   dir?: boolean
+  dropTarget?: boolean
 }
 
 const STATE_CLASSES: readonly (readonly [keyof RowState, string])[] = [
@@ -20,6 +21,7 @@ const STATE_CLASSES: readonly (readonly [keyof RowState, string])[] = [
   ['context', 'context'],
   ['currentDir', 'current-dir'],
   ['dir', 'is-dir'],
+  ['dropTarget', 'drop-target'],
 ]
 
 export function rowClassName(base: string, state: RowState = {}): string {

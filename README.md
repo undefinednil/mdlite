@@ -40,21 +40,21 @@ src-tauri/            Rust backend
   src/watch.rs        recursive watcher, debounced, emits fs-change
   src/settings.rs     editor settings and shortcut overrides
   src/state.rs        roots and settings persisted to the config file
-  src/lib.rs          21 Tauri commands
+  src/lib.rs          22 Tauri commands
 src/                  React app
   api.ts              the only seam: invoke() calls into Rust
   components/         FileTree, FolderView, MarkdownView, MediaView,
                       ExcalidrawView, Editor, Palette, SettingsView, TrashView,
                       DialogHost, ContextMenu
   lib/                markdown pipeline, path helpers, shortcuts, keyboard,
-                      editor keys, settings, vimrc parser
+                      editor keys, settings, Vim settings
 ```
 
 Images and video are served through the Tauri asset protocol, because a webview cannot load `file://`.
 
 ## Behaviour
 
-One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations, with the drawing staying put while the note scrolls. See [Features](docs/features.md) for each area and its limits.
+One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Drag a tree row onto a folder to move it, or onto the empty tree space to move it to the root. The sidebar history button opens the recent-files list. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations, with the drawing staying put while the note scrolls. See [Features](docs/features.md) for each area and its limits.
 
 ## Settings
 
@@ -69,24 +69,25 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 | `⌃E` | Fuzzy find a file |
 | `⌃G` | Search file contents (grep) |
 | `⌃N` / `⌃P` | Move down / up in the tree, folder table and finder |
-| `⌃Tab` | Cycle through the last 5 opened files; release Ctrl to open the highlighted one (`⌃⇧Tab` goes backwards) |
+| `⌃Tab` | Cycle through the last 5 opened files; press Enter to open the highlighted one and Esc to cancel (`⌃⇧Tab` goes backwards; both are customizable) |
 | `j` `k` `h` `l` `g` `G` | Tree navigation: down, up, collapse, expand, top, bottom |
 | `Space` | Tree: expand or collapse the highlighted folder |
-| `⌃←` | Tree: collapse every folder |
+| `⌃←` | Tree: collapse every folder, including while a filter is active |
 | `a` `r` `d` | Tree: new file (end with `/` for a folder), rename, move to trash (all selected rows when several are selected) |
 | `m` | Tree: move the row, or every marked row, to a folder picked from a list |
 | `Shift`-click / `⌘`-click | Tree: select a range / toggle one row |
 | `⌘A` / `⌃A` / `Esc` | Tree: select all visible rows / clear the selection |
 | `x` `y` `p` `u` | Tree: cut, copy, paste, undo the last file operation |
 | `j` / `k` | Scroll smoothly in view mode; move the cursor in the folder table |
-| `gg` / `G` | View mode: glide to the top / bottom of the note |
+| `gg` / `G` | View mode: glide to the top / bottom of the open view |
+| `⌃D` / `⌃U` | Scroll half a screen in the reading view and editor; `⌃U` clears a focused text input |
+| `⌥↓` / `⌥↑` | Move a full page in the editor |
+| `⌥⇧↓` / `⌥⇧↑` | Move the cursor to the last / first visible line without scrolling |
 | `⌃H` / `⌃L` | Focus the file tree / the main area |
 | `⌃⇧V` | Toggle edit / view (also `⌃⇧E`) |
 | `⌃S` | Save |
-| `⌃D` / `⌃U` | Editor: jump to the bottom / top of the screen and centre |
-| `⌥↓` / `⌥↑` | Editor: page down / up |
 | `⌃F` | Find in the open note: the find bar in the reading view, the search panel in the editor |
-| `⌃W` | Close the open file and show its folder |
+| `⌃W` | Close the open file and show its folder, or close Settings or Trash |
 | `⌃` + scroll | Zoom the main area in or out |
 | `⌃+` / `⌃-` / `⌃0` | Zoom the main area in, out, or back to 100% |
 | Middle-drag | Pan the main area; useful when zoomed in |
@@ -95,7 +96,7 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 
 `⌘` means Command on macOS and Ctrl on Windows or Linux. `⌃` means Control on every platform. The default app shortcuts use Control; tree navigation also accepts Command on macOS. Change any binding in Settings → Shortcuts.
 
-Some keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `Tab` (or `Shift`+`Tab`), `N`, `P`, `A` or `←`, `Ctrl`/`Cmd` with `Q`, `Cmd` with `W`, and the main-area zoom keys (`Ctrl`/`Cmd` with `+`, `-`, `0` or the scroll wheel). `⌃D`/`⌃U` and `⌥↓`/`⌥↑` work in the editor. With Vim on, Vim handles the Control keys.
+Some keys stay fixed: `Enter`, `Esc`, the arrow keys, `Space` (and their Shift variants), `Ctrl`/`Cmd` with `N`, `P`, `A` or `←`, `Ctrl`/`Cmd` with `Q`, `Cmd` with `W`, and the main-area zoom keys (`Ctrl`/`Cmd` with `+`, `-`, `0` or the scroll wheel). `Cmd`+`Tab` stays with the system; `Ctrl`+`Tab` is the default recent-file shortcut and can be changed in Settings. `⌃D`/`⌃U` are half-page scroll commands outside inputs, `⌥↓`/`⌥↑` move a full page, and `⌥⇧↓`/`⌥⇧↑` move the cursor to the visible edge without scrolling. They work with Vim on or off. The app also keeps `⌃S`, `⌃W`, `⌃E`, `⌃H`, `⌃L` and `⌃F` as defaults.
 
 ## Icons
 

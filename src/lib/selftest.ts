@@ -61,14 +61,8 @@ export async function runSelfTest(): Promise<void> {
     return {
       path: data.path,
       vimEnabled: data.settings.vimEnabled,
-      vimrcMode: data.settings.vimrc.mode,
       shortcuts: Object.keys(data.settings.shortcuts).length,
     }
-  })
-
-  await check('vimrc', async () => {
-    const data = await api.vimrc()
-    return { exists: data.exists, chars: data.content.length }
   })
 
   await check('write', async () => {
@@ -78,12 +72,22 @@ export async function runSelfTest(): Promise<void> {
 
   await check('dialogs', async () => {
     const { askConfirm } = await import('./dialogs')
+    const pending = askConfirm('self-test confirm')
+    let clicked = false
+    for (let index = 0; index < 100; index += 1) {
+      const button = document.querySelector<HTMLButtonElement>('.dialog .btn')
+      if (button) {
+        button.click()
+        clicked = true
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
     const confirmed = await Promise.race([
-      askConfirm('self-test confirm'),
+      pending,
       new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
     ])
-    document.querySelector<HTMLButtonElement>('.dialog .btn')?.click()
-    return { confirmReturned: confirmed }
+    return { clicked, confirmReturned: confirmed }
   })
 
   await new Promise((resolve) => setTimeout(resolve, 1200))

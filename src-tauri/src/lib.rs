@@ -30,14 +30,6 @@ struct InfoResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct VimrcResponse {
-    path: String,
-    exists: bool,
-    content: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct SettingsResponse {
     settings: AppSettings,
     path: String,
@@ -267,16 +259,6 @@ fn restore_entry(state: State<'_, AppState>, from: String, to: String) -> ApiRes
 }
 
 #[tauri::command]
-fn vimrc(state: State<'_, AppState>) -> ApiResult<VimrcResponse> {
-    let source = state.settings()?.load_vimrc();
-    Ok(VimrcResponse {
-        path: source.path,
-        exists: source.exists,
-        content: source.content,
-    })
-}
-
-#[tauri::command]
 fn settings_get(state: State<'_, AppState>) -> ApiResult<SettingsResponse> {
     Ok(SettingsResponse {
         settings: state.settings()?,
@@ -322,7 +304,6 @@ pub fn run() {
             trash_list,
             trash_purge,
             restore_entry,
-            vimrc,
             settings_get,
             settings_set
         ])

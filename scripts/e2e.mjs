@@ -44,6 +44,8 @@ async function main() {
   const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'mdlite-e2e-vault-'))
   const config = path.join(os.tmpdir(), `mdlite-e2e-${process.pid}.json`)
   fs.writeFileSync(path.join(vault, 'note.md'), '# e2e note\n')
+  const page = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif}</style></head><body><h1>HTML preview</h1>${Array.from({ length: 80 }, (_, index) => `<p>line ${index}</p>`).join('')}<script>document.body.dataset.ready="yes"</script></body></html>`
+  fs.writeFileSync(path.join(vault, 'page.html'), page)
   fs.copyFileSync(path.join(root, 'src', 'assets', 'logo.png'), path.join(vault, 'image.png'))
 
   const log = path.join(os.tmpdir(), `mdlite-e2e-${process.pid}.log`)
@@ -53,9 +55,18 @@ async function main() {
     stdio: ['ignore', out, out],
   })
 
+  // A background webview throttles timers, and the self-test would never finish.
+  if (process.platform === 'darwin') {
+    await wait(1500)
+    await run('osascript', [
+      '-e',
+      `tell application "System Events" to set frontmost of (first process whose unix id is ${child.pid}) to true`,
+    ]).catch(() => undefined)
+  }
+
   const report = path.join(vault, 'temp', '__selftest.json')
   let finished = false
-  for (let index = 0; index < 120; index += 1) {
+  for (let index = 0; index < 300; index += 1) {
     if (fs.existsSync(report)) {
       const text = fs.readFileSync(report, 'utf8')
       if (text.includes('"finished"')) {

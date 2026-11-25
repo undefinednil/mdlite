@@ -1,10 +1,11 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { AbsPath, AppSettings, RelPath, RootEntry, TreeNode } from '../shared/types'
 import { api } from './api'
 import { Editor } from './components/Editor'
 import { FileTree, type FileTreeHandle } from './components/FileTree'
 import { FolderView } from './components/FolderView'
+import { HtmlView, type HtmlViewHandle } from './components/HtmlView'
 import { MarkdownView } from './components/MarkdownView'
 import { MediaView } from './components/MediaView'
 import { Palette, type PaletteMode } from './components/Palette'
@@ -22,14 +23,17 @@ import logoUrl from './assets/logo.png'
 import { fileType, formatKind } from './lib/fileType'
 import { formatRelativeTime } from './lib/format'
 import { absPath, ancestors, baseName, dirname, isSameOrInside, relPath, remapPath } from './lib/paths'
-import { defaultVimSettings, loadVimSettings, type VimSettings } from './lib/vimrc'
+import { editorSettingsFromApp } from './lib/vimConfig'
 import { isMacPlatform, isRecordingShortcut, matchesCommand } from './lib/shortcuts'
 import { appShortcutAllowed } from './lib/keyboard'
-import { createSmoothScroller } from './lib/scroll'
-import { activateFindHit, clearFindHits, markFindHits } from './lib/findInView'
-import { mainZoomLayout, stepMainZoom, wheelMainZoom } from './lib/mainZoom'
+import { isClearInputKey, isTextControl } from './lib/inputKeys'
+import { createSmoothScroller, halfPageDelta, scrollRatio, scrollTopAtRatio } from './lib/scroll'
+import { cycleKeyAction } from './lib/cycle'
+import { activateFindHit, clearFindHits, findCaseSensitive, markFindHits } from './lib/findInView'
+import { mainZoomLayout, stepMainZoom, usesFullMainWidth, wheelMainZoom } from './lib/mainZoom'
 import { pageMaxWidth } from './lib/pageWidth'
 import { penAvailable } from './lib/pen'
+import { SIDEBAR_DEFAULT, SIDEBAR_MAX, clampSidebarWidth, resolveSidebarWidth } from './lib/sidebar'
 import { collectFiles, collectFolders, collectPaths, findNode } from './lib/tree'
 import { applyVimSettings } from './lib/vim'
 
@@ -70,13 +74,15 @@ export default function App() {
   const [infoReady, setInfoReady] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showTrash, setShowTrash] = useState(false)
-  const [vim, setVim] = useState<VimSettings>(defaultVimSettings)
   const [settings, setSettings] = useState<AppSettings>(defaultAppSettings)
   const [settingsPath, setSettingsPath] = useState<AbsPath>(() => absPath(''))
+  const vim = useMemo(() => editorSettingsFromApp(settings), [settings])
   const [loadTick, setLoadTick] = useState(0)
   const [dragging, setDragging] = useState(false)
   const [mainZoom, setMainZoom] = useState(1)
   const [paneWidth, setPaneWidth] = useState(0)
+  const [sidebarWidth, setSidebarWidth] = useState(() => defaultAppSettings.sidebarWidth)
+  const [sidebarResizing, setSidebarResizing] = useState(false)
   const [pageCap, setPageCap] = useState(0)
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
@@ -97,6 +103,7 @@ export default function App() {
   const focusOnReadyRef = useRef(false)
   const scrollRatios = useRef(new Map<RelPath, number>())
   const scrollRef = useRef<HTMLDivElement>(null)
+  const htmlViewRef = useRef<HtmlViewHandle>(null)
   const mainRef = useRef<HTMLElement>(null)
   const zoomRef = useRef<HTMLDivElement>(null)
   const zoomPathRef = useRef<string | null>(null)
@@ -104,6 +111,10 @@ export default function App() {
   const editorFindRef = useRef<(() => void) | null>(null)
   const smoothScrollRef = useRef(createSmoothScroller())
   const topArmedRef = useRef(0)
+  const scrollRestoreRef = useRef(0)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  sidebarWidthRef.current = sidebarWidth
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
   const recentsRef = useRef(recents)
   recentsRef.current = recents
@@ -165,21 +176,24 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      let stored = defaultAppSettings
       try {
         const data = await api.settings()
-        stored = data.settings
         setSettings(data.settings)
         setSettingsPath(data.path)
       } catch {
-        stored = defaultAppSettings
+        setSettings(defaultAppSettings)
       }
-      const vimSettings = await loadVimSettings(true)
-      applyVimSettings(vimSettings, stored.vimEnabled)
-      setVim(vimSettings)
     })()
     void refreshInfo()
   }, [refreshInfo])
+
+  useEffect(() => {
+    applyVimSettings(editorSettingsFromApp(settings), settings.vimEnabled)
+  }, [settings])
+
+  useEffect(() => {
+    setSidebarWidth(resolveSidebarWidth(settings.sidebarWidth))
+  }, [settings.sidebarWidth])
 
   useEffect(() => {
     if (!infoReady) return
@@ -227,35 +241,44 @@ export default function App() {
   }, [])
 
   const readScrollRatio = useCallback(() => {
+    const snapshot = session.getSnapshot()
+    const current = snapshot.document
+    if (current && snapshot.mode === 'view' && fileType(current.path).kind === 'html') {
+      return htmlViewRef.current?.scrollRatio() ?? 0
+    }
     const element = activeScroller()
     if (!element) return 0
-    const max = element.scrollHeight - element.clientHeight
-    return max > 0 ? element.scrollTop / max : 0
-  }, [activeScroller])
+    return scrollRatio(element.scrollTop, element.scrollHeight, element.clientHeight)
+  }, [activeScroller, session])
 
   const applyScrollRatio = useCallback(
-    (ratio: number, attempt = 0) => {
+    (ratio: number, attempt = 0, token = ++scrollRestoreRef.current) => {
+      const snapshot = session.getSnapshot()
+      const current = snapshot.document
+      if (current && snapshot.mode === 'view' && fileType(current.path).kind === 'html') return
       requestAnimationFrame(() => {
+        if (scrollRestoreRef.current !== token) return
         const element = activeScroller()
         if (!element) return
         const max = element.scrollHeight - element.clientHeight
         if (max <= 0 && attempt < 12) {
-          setTimeout(() => applyScrollRatio(ratio, attempt + 1), 60)
+          setTimeout(() => applyScrollRatio(ratio, attempt + 1, token), 60)
           return
         }
-        element.scrollTop = max * ratio
+        element.scrollTop = scrollTopAtRatio(ratio, element.scrollHeight, element.clientHeight)
       })
     },
-    [activeScroller],
+    [activeScroller, session],
   )
 
-  useEffect(() => {
-    const path = selected
-    if (!path) return
-    return () => {
-      scrollRatios.current.set(path, readScrollRatio())
-    }
-  }, [selected, readScrollRatio])
+  const cancelScrollRestore = useCallback(() => {
+    scrollRestoreRef.current += 1
+  }, [])
+
+  const rememberScroll = useCallback(() => {
+    const path = session.getSnapshot().document?.path ?? selectedRef.current
+    if (path) scrollRatios.current.set(path, readScrollRatio())
+  }, [session, readScrollRatio])
 
   useEffect(() => {
     if (status !== 'ready' || !doc) return
@@ -293,13 +316,16 @@ export default function App() {
   const selectFile = useCallback(
     async (path: RelPath, target?: JumpTarget, focusMain = true) => {
       if (!(await confirmSave())) return
+      rememberScroll()
       if (path === selectedRef.current && session.getSnapshot().document) {
         setShowSettings(false)
         setShowTrash(false)
         session.setMode('view')
         setJump(target ?? null)
         requestAnimationFrame(() => {
-          if (mainFocusRef.current) mainFocusRef.current()
+          const frame = scrollRef.current?.querySelector<HTMLIFrameElement>('.html-frame')
+          if (frame) frame.focus()
+          else if (mainFocusRef.current) mainFocusRef.current()
           else scrollRef.current?.focus()
         })
         return
@@ -317,7 +343,7 @@ export default function App() {
         return next
       })
     },
-    [confirmSave, session],
+    [confirmSave, session, rememberScroll],
   )
 
   const selectFileFromTree = useCallback(
@@ -330,6 +356,7 @@ export default function App() {
   const openDir = useCallback(
     async (dir: RelPath) => {
       if (!(await confirmSave())) return
+      rememberScroll()
       focusOnReadyRef.current = false
       setShowSettings(false)
       setShowTrash(false)
@@ -346,7 +373,7 @@ export default function App() {
         return next
       })
     },
-    [confirmSave, session],
+    [confirmSave, session, rememberScroll],
   )
 
   const closeFile = useCallback(async () => {
@@ -354,13 +381,14 @@ export default function App() {
     const openPath = snapshot.document?.path ?? selectedRef.current
     if (!openPath) return
     if (!(await confirmSave())) return
+    rememberScroll()
     const folder = snapshot.scratch ? null : dirname(openPath)
     await session.close()
     setSelected(null)
     if (folder !== null) setCurrentDir(folder)
     setJump(null)
     requestAnimationFrame(() => scrollRef.current?.focus())
-  }, [confirmSave, session])
+  }, [confirmSave, session, rememberScroll])
 
   const insertMedia = useCallback(async (file: File): Promise<string | null> => {
     const current = session.getSnapshot().document
@@ -498,28 +526,34 @@ export default function App() {
     setShowSettings(true)
   }, [confirmSave])
 
+  const closeTrash = useCallback(() => {
+    setShowTrash(false)
+    requestAnimationFrame(() => {
+      if (mainFocusRef.current) mainFocusRef.current()
+      else scrollRef.current?.focus()
+    })
+  }, [])
+
   const openTrash = useCallback(async () => {
     if (showTrash) {
-      setShowTrash(false)
-      requestAnimationFrame(() => {
-        if (mainFocusRef.current) mainFocusRef.current()
-        else scrollRef.current?.focus()
-      })
+      closeTrash()
       return
     }
     if (!activeRootId) return
     if (!(await confirmSave())) return
     setShowSettings(false)
     setShowTrash(true)
-  }, [activeRootId, confirmSave, showTrash])
+  }, [activeRootId, confirmSave, showTrash, closeTrash])
 
   const closeSettings = useCallback(() => {
     setShowSettings(false)
-    requestAnimationFrame(() => settingsButtonRef.current?.focus())
+    requestAnimationFrame(() => {
+      if (settingsRef.current.sidebarWidth > 0) settingsButtonRef.current?.focus()
+      else scrollRef.current?.focus()
+    })
   }, [])
 
   const updateSettings = useCallback((next: AppSettings) => {
-    const previous = settingsRef.current
     settingsRef.current = next
     setSettings(next)
     const seq = ++settingsSeqRef.current
@@ -531,14 +565,6 @@ export default function App() {
         if (seq !== settingsSeqRef.current) return
         settingsRef.current = data.settings
         setSettings(data.settings)
-        const vimChanged =
-          data.settings.vimEnabled !== previous.vimEnabled ||
-          JSON.stringify(data.settings.vimrc) !== JSON.stringify(previous.vimrc)
-        if (vimChanged) {
-          const vimSettings = await loadVimSettings(true)
-          applyVimSettings(vimSettings, data.settings.vimEnabled)
-          setVim(vimSettings)
-        }
       })
       .catch(async (err: Error) => {
         if (seq !== settingsSeqRef.current) return
@@ -548,19 +574,61 @@ export default function App() {
           settingsRef.current = data.settings
           setSettings(data.settings)
           setSettingsPath(data.path)
-          const vimSettings = await loadVimSettings(true)
-          applyVimSettings(vimSettings, data.settings.vimEnabled)
-          setVim(vimSettings)
         } catch {
           return
         }
       })
   }, [])
 
+  const persistSidebarWidth = useCallback(
+    (width: number) => {
+      if (width === settingsRef.current.sidebarWidth) return
+      updateSettings({ ...settingsRef.current, sidebarWidth: width })
+    },
+    [updateSettings],
+  )
+
+  const startSidebarDrag = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    sidebarDragRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth > 0 ? sidebarWidth : SIDEBAR_DEFAULT,
+    }
+    setSidebarResizing(true)
+  }
+
+  const moveSidebarDrag = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = sidebarDragRef.current
+    if (!drag) return
+    setSidebarWidth(clampSidebarWidth(drag.startWidth + event.clientX - drag.startX))
+  }
+
+  const finishSidebarDrag = (event: PointerEvent<HTMLDivElement>, persist: boolean) => {
+    const drag = sidebarDragRef.current
+    if (!drag) return
+    sidebarDragRef.current = null
+    setSidebarResizing(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    const width = persist
+      ? clampSidebarWidth(drag.startWidth + event.clientX - drag.startX)
+      : sidebarWidthRef.current
+    setSidebarWidth(width)
+    persistSidebarWidth(width)
+  }
+
   const focusMain = useCallback(() => {
     const folder = scrollRef.current?.querySelector<HTMLElement>('.folder-view')
     if (folder) {
       folder.focus()
+      return
+    }
+    const frame = scrollRef.current?.querySelector<HTMLIFrameElement>('.html-frame')
+    if (frame) {
+      frame.focus()
       return
     }
     if (mainFocusRef.current) {
@@ -584,7 +652,10 @@ export default function App() {
   useEffect(() => {
     const element = scrollRef.current
     if (!element) return
-    const cancel = () => smoothScrollRef.current.cancel()
+    const cancel = () => {
+      smoothScrollRef.current.cancel()
+      cancelScrollRestore()
+    }
     element.addEventListener('wheel', cancel, { passive: true })
     element.addEventListener('touchstart', cancel, { passive: true })
     element.addEventListener('pointerdown', cancel, { passive: true })
@@ -594,9 +665,21 @@ export default function App() {
       element.removeEventListener('touchstart', cancel)
       element.removeEventListener('pointerdown', cancel)
     }
-  }, [])
+  }, [cancelScrollRestore])
+
+  useEffect(() => {
+    const cancel = () => cancelScrollRestore()
+    window.addEventListener('keydown', cancel, true)
+    return () => window.removeEventListener('keydown', cancel, true)
+  }, [cancelScrollRestore])
 
   const closePalette = useCallback(() => setPalette(null), [])
+
+  const openRecentFiles = useCallback(() => {
+    const items = recentsRef.current
+    if (!items.length) return
+    setCycle({ items, index: 0 })
+  }, [])
 
   const runAppShortcut = useCallback((event: KeyboardEvent): boolean => {
     if (matchesCommand(settings.shortcuts, 'app.focusTree', event)) {
@@ -633,8 +716,14 @@ export default function App() {
       event.preventDefault()
       event.stopPropagation()
       const find = editorFindRef.current
+      const snapshot = session.getSnapshot()
       if (find) find()
-      else if (!showSettings && !showTrash && session.getSnapshot().document) {
+      else if (
+        !showSettings &&
+        !showTrash &&
+        snapshot.document &&
+        fileType(snapshot.document.path).kind !== 'html'
+      ) {
         setFindOpen(true)
         setFindFocusTick((tick) => tick + 1)
       }
@@ -643,7 +732,9 @@ export default function App() {
     if (matchesCommand(settings.shortcuts, 'app.closeFile', event)) {
       event.preventDefault()
       event.stopPropagation()
-      void closeFile()
+      if (showSettings) closeSettings()
+      else if (showTrash) closeTrash()
+      else void closeFile()
       return true
     }
     if (matchesCommand(settings.shortcuts, 'app.save', event)) {
@@ -653,7 +744,7 @@ export default function App() {
       return true
     }
     return false
-  }, [settings.shortcuts, toggleMode, focusMain, save, closeFile, showSettings, showTrash])
+  }, [settings.shortcuts, toggleMode, focusMain, save, closeFile, closeSettings, closeTrash, showSettings, showTrash])
 
   const closeFind = useCallback(() => {
     setFindOpen(false)
@@ -678,6 +769,7 @@ export default function App() {
           mac: isMacPlatform(),
           paletteOpen: Boolean(palette),
           settingsOpen: showSettings,
+          trashOpen: showTrash,
           cycleOpen: Boolean(cycle),
           save: matchesCommand(settings.shortcuts, 'app.save', event),
           findFile: matchesCommand(settings.shortcuts, 'app.findFile', event),
@@ -698,8 +790,23 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!isClearInputKey(event) || !isTextControl(event.target)) return
+      const target = event.target as HTMLInputElement | HTMLTextAreaElement
+      event.preventDefault()
+      const prototype =
+        target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+      setter?.call(target, '')
+      target.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
       if (isDialogOpen() || isRecordingShortcut() || event.isComposing || event.defaultPrevented) return
-      if (palette || showSettings) return
+      if (palette || showSettings || cycle) return
       const target = event.target instanceof Element ? event.target : null
       const typing = Boolean(
         target?.closest(
@@ -717,37 +824,61 @@ export default function App() {
       }
       const snapshot = session.getSnapshot()
       if (!typing && snapshot.document && snapshot.mode === 'view') {
-        const element = activeScroller()
-        if (element) {
-          const activeName = selectedRef.current ?? snapshot.scratch?.name ?? ''
-          const viewKind = activeName ? fileType(activeName).kind : null
-          if (viewKind === 'markdown' && matchesCommand(settings.shortcuts, 'tree.top', event)) {
+        const html = fileType(snapshot.document.path).kind === 'html'
+        const element = html ? null : activeScroller()
+        const by = (delta: number) => {
+          if (html) htmlViewRef.current?.scrollBy(delta)
+          else if (element) smoothScrollRef.current.by(element, delta)
+        }
+        const toTop = () => {
+          if (html) htmlViewRef.current?.scrollToTop()
+          else if (element) smoothScrollRef.current.to(element, 0)
+        }
+        const toBottom = () => {
+          if (html) htmlViewRef.current?.scrollToBottom()
+          else if (element) smoothScrollRef.current.to(element, element.scrollHeight)
+        }
+        if (html || element) {
+          const height = element?.clientHeight ?? scrollRef.current?.clientHeight ?? 0
+          if (matchesCommand(settings.shortcuts, 'tree.top', event)) {
             event.preventDefault()
             const now = Date.now()
             if (now - topArmedRef.current < 1000) {
               topArmedRef.current = 0
-              smoothScrollRef.current.to(element, 0)
+              toTop()
             } else {
               topArmedRef.current = now
             }
             return
           }
-          if (viewKind === 'markdown' && matchesCommand(settings.shortcuts, 'tree.bottom', event)) {
+          if (matchesCommand(settings.shortcuts, 'tree.bottom', event)) {
             event.preventDefault()
             topArmedRef.current = 0
-            smoothScrollRef.current.to(element, element.scrollHeight)
+            toBottom()
+            return
+          }
+          if (matchesCommand(settings.shortcuts, 'editor.halfPageDown', event)) {
+            event.preventDefault()
+            topArmedRef.current = 0
+            by(halfPageDelta(height))
+            return
+          }
+          if (matchesCommand(settings.shortcuts, 'editor.halfPageUp', event)) {
+            event.preventDefault()
+            topArmedRef.current = 0
+            by(-halfPageDelta(height))
             return
           }
           if (matchesCommand(settings.shortcuts, 'tree.down', event)) {
             event.preventDefault()
             topArmedRef.current = 0
-            smoothScrollRef.current.by(element, 96)
+            by(96)
             return
           }
           if (matchesCommand(settings.shortcuts, 'tree.up', event)) {
             event.preventDefault()
             topArmedRef.current = 0
-            smoothScrollRef.current.by(element, -96)
+            by(-96)
             return
           }
         }
@@ -759,7 +890,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [runAppShortcut, activeScroller, settings.shortcuts, palette, showSettings])
+  }, [runAppShortcut, activeScroller, settings.shortcuts, palette, showSettings, cycle])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -842,13 +973,23 @@ export default function App() {
       if (root) clearFindHits(root)
       return
     }
-    const hits = root ? markFindHits(root, findQuery) : []
+    const hits = root
+      ? markFindHits(
+          root,
+          findQuery,
+          findCaseSensitive(
+            findQuery,
+            settings.vimEnabled ? settings.ignoreCase : true,
+            settings.vimEnabled ? settings.smartCase : false,
+          ),
+        )
+      : []
     findHitsRef.current = hits
     findIndexRef.current = 0
     setFindIndex(0)
     setFindTotal(hits.length)
     if (hits.length) activateFindHit(hits, 0)
-  }, [findOpen, findQuery, draft, doc?.path, mode])
+  }, [findOpen, findQuery, draft, doc?.path, mode, settings.vimEnabled, settings.ignoreCase, settings.smartCase])
 
   useEffect(() => {
     if (!findOpen) return
@@ -898,6 +1039,7 @@ export default function App() {
       setError('Unsupported file type')
       return
     }
+    rememberScroll()
     const hasExtension = /\.[^./\\]+$/.test(file.name)
     let content: string
     if (hasExtension) {
@@ -921,7 +1063,7 @@ export default function App() {
     setSelected(null)
     void session.openScratch(file.name, content, file.size)
     setJump(null)
-  }, [confirmSave, session])
+  }, [confirmSave, session, rememberScroll])
 
   useEffect(() => {
     const prevent = (event: DragEvent) => event.preventDefault()
@@ -936,43 +1078,43 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isDialogOpen() || isRecordingShortcut() || event.isComposing) return
-      if (event.key === 'Escape' && cycleRef.current) {
-        event.preventDefault()
-        setCycle(null)
-        return
-      }
-      if (!event.ctrlKey || event.key !== 'Tab') return
+      const current = cycleRef.current
+      const action = cycleKeyAction({
+        key: event.key,
+        isOpen: Boolean(current),
+        next: matchesCommand(settings.shortcuts, 'app.recentFiles', event),
+        previous: matchesCommand(settings.shortcuts, 'app.recentFilesBack', event),
+      })
+      if (!action) return
 
       event.preventDefault()
       event.stopPropagation()
 
-      const items = cycleRef.current?.items ?? recentsRef.current
-      if (items.length === 0) return
-      const direction = event.shiftKey ? -1 : 1
+      if (action === 'cancel') {
+        setCycle(null)
+        return
+      }
+      if (action === 'open') {
+        const path = current?.items[current.index]
+        setCycle(null)
+        if (path) void selectFile(path)
+        return
+      }
 
-      setCycle((current) => {
-        if (!current) return { items, index: items.length > 1 ? 1 : 0 }
-        const next = (current.index + direction + items.length) % items.length
-        return { ...current, index: next }
+      const items = current?.items ?? recentsRef.current
+      if (items.length === 0) return
+      const direction = action === 'previous' ? -1 : 1
+
+      setCycle((active) => {
+        if (!active) return { items, index: items.length > 1 ? 1 : 0 }
+        const next = (active.index + direction + items.length) % items.length
+        return { ...active, index: next }
       })
     }
 
-    const onKeyUp = (event: KeyboardEvent) => {
-      if (event.key !== 'Control' || isDialogOpen() || isRecordingShortcut()) return
-      const current = cycleRef.current
-      if (!current) return
-      setCycle(null)
-      const path = current.items[current.index]
-      if (path) void selectFile(path)
-    }
-
     window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('keyup', onKeyUp, true)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('keyup', onKeyUp, true)
-    }
-  }, [selectFile])
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [selectFile, settings.shortcuts])
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -1122,9 +1264,14 @@ export default function App() {
   const showEditor =
     doc !== null &&
     !doc.binary &&
-    (kind === 'text' || (mode === 'edit' && (kind === 'markdown' || kind === 'svg')))
+    (kind === 'text' ||
+      (mode === 'edit' && (kind === 'markdown' || kind === 'svg' || kind === 'html')))
   const showFloating =
-    !showSettings && !showTrash && doc !== null && !doc.binary && (kind === 'markdown' || kind === 'svg')
+    !showSettings &&
+    !showTrash &&
+    doc !== null &&
+    !doc.binary &&
+    (kind === 'markdown' || kind === 'svg' || kind === 'html')
 
   const body = (() => {
     if (showTrash) {
@@ -1211,7 +1358,7 @@ export default function App() {
     if (showEditor) {
       return (
         <Editor
-          key={`${vim.sourceKey}:${settings.vimEnabled}`}
+          key={settings.vimEnabled ? 'vim' : 'plain'}
           value={draft}
           filePath={doc.path}
           settings={vim}
@@ -1224,6 +1371,18 @@ export default function App() {
           onMedia={insertMedia}
           onChange={session.setDraft}
           onSave={() => void save()}
+        />
+      )
+    }
+
+    if (kind === 'html') {
+      return (
+        <HtmlView
+          ref={htmlViewRef}
+          path={doc.path}
+          content={draft}
+          changeTick={changeTick}
+          initialScrollRatio={scrollRatios.current.get(doc.path) ?? 0}
         />
       )
     }
@@ -1243,7 +1402,7 @@ export default function App() {
     return <MediaView path={doc.path} size={doc.size} />
   })()
 
-  const fullMainWidth = !showSettings && !showTrash && kind === 'excalidraw'
+  const fullMainWidth = !showSettings && !showTrash && usesFullMainWidth(kind, mode)
   const zoom = fullMainWidth ? 1 : mainZoom
   const layout = mainZoomLayout(
     paneWidth,
@@ -1257,8 +1416,13 @@ export default function App() {
 
   return (
     <div
-      className={`app ${dragging ? 'dragging' : ''}`}
-      style={{ '--main-width': `${settings.mainWidth ?? 100}%` } as CSSProperties}
+      className={`app ${dragging ? 'dragging' : ''}${sidebarResizing ? ' resizing' : ''}`}
+      style={
+        {
+          '--main-width': `${settings.mainWidth ?? 100}%`,
+          '--sidebar-width': `${sidebarWidth}px`,
+        } as CSSProperties
+      }
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes('Files')) return
         event.preventDefault()
@@ -1299,6 +1463,16 @@ export default function App() {
           <div className="sidebar-actions">
             <button type="button" className="icon-btn" title="Find file (⌃E)" onClick={() => setPalette('files')}>
               <span className="material-symbols-rounded">search</span>
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              title="Recent files"
+              aria-label="Recent files"
+              disabled={recents.length === 0}
+              onClick={openRecentFiles}
+            >
+              <span className="material-symbols-rounded">history</span>
             </button>
             <button type="button" className="icon-btn" title="Search content (⌃G)" onClick={() => setPalette('content')}>
               <span className="material-symbols-rounded">manage_search</span>
@@ -1349,6 +1523,20 @@ export default function App() {
         )}
       </aside>
 
+      <div
+        className={`sidebar-resize ${sidebarResizing ? 'active' : ''}`}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        aria-valuemin={0}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={sidebarWidth}
+        onPointerDown={startSidebarDrag}
+        onPointerMove={moveSidebarDrag}
+        onPointerUp={(event) => finishSidebarDrag(event, true)}
+        onPointerCancel={(event) => finishSidebarDrag(event, false)}
+      />
+
       <main className="main" ref={mainRef}>
         <header className="main-head">
           {showTrash ? (
@@ -1368,17 +1556,15 @@ export default function App() {
               {scratch && <span className="scratch-badge">temporary</span>}
               {dirty && <span className="dirty-dot" title="Unsaved changes" />}
               <span className="spacer" />
-              {settings.vimEnabled && vim.exists && showEditor && (
+              {settings.vimEnabled && showEditor && (
                 <span
                   className="vim-badge"
                   title={[
-                    vim.source,
-                    `${vim.mappings.length} mappings · ${vim.applied} lines applied · ${vim.skipped.length} not applicable`,
-                    `tabstop ${vim.tabstop} · shiftwidth ${vim.shiftwidth} · ${vim.expandtab ? 'expandtab' : 'noexpandtab'} · ${settings.wordWrap ? 'wrap on' : 'wrap off'}`,
-                    vim.skipped.length ? `skipped: ${vim.skipped.slice(0, 6).join(' | ')}` : '',
-                  ]
-                    .filter(Boolean)
-                    .join('\n')}
+                    'Vim keybindings',
+                    `leader ${settings.vimLeader === 'Space' ? 'Space' : settings.vimLeader}`,
+                    `${settings.vimRemaps.length} remaps · tab ${settings.tabSize} · indent ${settings.indentWidth} · ${settings.insertSpaces ? 'spaces' : 'tabs'}`,
+                    `yank ${settings.vimYankTarget} · delete ${settings.vimDeleteTarget} · paste ${settings.vimPasteSource}`,
+                  ].join('\n')}
                 >
                   vim
                 </span>
@@ -1414,7 +1600,7 @@ export default function App() {
               )}
               {savedFlash && <span className="saved-flash">Saved</span>}
               {doc && doc.mtime > 0 && <span className="meta">{formatRelativeTime(doc.mtime)}</span>}
-              {doc && !doc.binary && (kind === 'markdown' || kind === 'text') && (
+              {doc && !doc.binary && (kind === 'markdown' || kind === 'text' || (kind === 'html' && showEditor)) && (
                 <button
                   type="button"
                   className={`icon-btn copy-btn ${copiedAt > 0 ? 'copied' : ''}`}
@@ -1444,7 +1630,7 @@ export default function App() {
         {!showSettings && !showTrash && conflictBanner}
 
         <div
-          className={`main-body ${showSettings || showTrash ? 'view' : showEditor || kind === 'excalidraw' ? 'edit' : 'view'}${fullMainWidth ? ' full' : ''}`}
+          className={`main-body ${showSettings || showTrash ? 'view' : showEditor || kind === 'excalidraw' ? 'edit' : 'view'}${showSettings ? ' settings-body' : ''}${fullMainWidth ? ' full' : ''}`}
           ref={scrollRef}
           style={mainBodyStyle}
           tabIndex={-1}
@@ -1463,7 +1649,6 @@ export default function App() {
                 activePath={rootPath}
                 settings={settings}
                 settingsPath={settingsPath}
-                vim={vim}
                 onSwitch={switchRoot}
                 onAdd={addRootFolder}
                 onRemove={removeRootFolder}
@@ -1533,17 +1718,30 @@ export default function App() {
       <DialogHost />
 
       {cycle && (
-        <div className="cycle">
+        <div
+          className="overlay cycle"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) setCycle(null)
+          }}
+        >
           <div className="cycle-card">
-            <div className="cycle-hint">Recent files — release Ctrl to open</div>
+            <div className="cycle-hint">Recent files — click a file or press Enter, Esc to cancel</div>
             {cycle.items.map((path, index) => (
-              <div key={path} className={`cycle-item ${index === cycle.index ? 'active' : ''}`}>
+              <button
+                key={path}
+                type="button"
+                className={`cycle-item ${index === cycle.index ? 'active' : ''}`}
+                onClick={() => {
+                  setCycle(null)
+                  void selectFile(path)
+                }}
+              >
                 <span className="material-symbols-rounded cycle-icon">
                   {fileType(path).kind === 'markdown' ? 'description' : 'code'}
                 </span>
                 <span className="cycle-name">{baseName(path)}</span>
                 <span className="cycle-dir">{dirname(path) || '/'}</span>
-              </div>
+              </button>
             ))}
           </div>
         </div>

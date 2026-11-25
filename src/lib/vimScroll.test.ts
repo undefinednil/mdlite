@@ -59,7 +59,7 @@ for (const [key, value] of Object.entries(globals)) {
 
 const { EditorState } = await import('@codemirror/state')
 const { EditorView } = await import('@codemirror/view')
-const { getCM } = await import('@replit/codemirror-vim')
+const { getCM, Vim } = await import('@replit/codemirror-vim')
 const { editorKeyExtensions } = await import('./editorKeys')
 const { localCharCoords, patchVimCharCoords } = await import('./vimScroll')
 
@@ -128,7 +128,13 @@ test('Ctrl+D scrolls down when the target line is outside the rendered viewport'
     state: EditorState.create({
       doc,
       extensions: [
-        ...editorKeyExtensions({ indent: '\t', vimEnabled: true, getShortcuts: () => ({}) }),
+        ...editorKeyExtensions({
+          getIndent: () => '\t',
+          vimEnabled: true,
+          getShortcuts: () => ({}),
+          getMappings: () => [],
+          getDocKey: () => '',
+        }),
       ],
     }),
     parent: document.body,
@@ -162,9 +168,7 @@ test('Ctrl+D scrolls down when the target line is outside the rendered viewport'
     scrolledTo = y
   }
 
-  view.contentDOM.dispatchEvent(
-    new window.KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true }),
-  )
+  Vim.handleKey(cm, '<C-d>', 'user')
 
   assert.equal(targetPos > originalPos, true)
   assert.equal(scrolledTo, scrollTop + targetTop - currentTop)

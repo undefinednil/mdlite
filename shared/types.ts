@@ -57,31 +57,41 @@ export interface InfoResponse {
   roots: RootEntry[]
 }
 
-export type VimrcMode = 'auto' | 'path' | 'inline'
+export type LineNumberMode = 'off' | 'absolute' | 'relative'
+export type RegisterTarget = 'unnamed' | 'clipboard' | 'blackhole'
+export type PasteSource = 'unnamed' | 'clipboard'
+export type VimRemapMode = 'normal' | 'visual' | 'insert' | 'operator'
 
-export interface VimrcSettings {
-  mode: VimrcMode
-  path: string
-  text: string
+export interface VimRemap {
+  mode: VimRemapMode
+  lhs: string
+  rhs: string
 }
 
 export interface AppSettings {
   vimEnabled: boolean
+  vimLeader: string
+  vimYankTarget: RegisterTarget
+  vimDeleteTarget: RegisterTarget
+  vimPasteSource: PasteSource
+  vimKeepSelection: boolean
+  vimRemaps: VimRemap[]
+  scrollOff: number
+  lineNumbers: LineNumberMode
+  tabSize: number
+  indentWidth: number
+  insertSpaces: boolean
+  ignoreCase: boolean
+  smartCase: boolean
   wordWrap: boolean
   mainWidth: number
-  vimrc: VimrcSettings
+  sidebarWidth: number
   shortcuts: Record<string, string>
 }
 
 export interface SettingsResponse {
   settings: AppSettings
   path: AbsPath
-}
-
-export interface VimrcResponse {
-  path: string
-  exists: boolean
-  content: string
 }
 
 export interface TrashEntry {

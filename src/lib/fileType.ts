@@ -1,6 +1,6 @@
 import { extname } from './paths'
 
-export type FileKind = 'markdown' | 'excalidraw' | 'svg' | 'image' | 'text' | 'binary'
+export type FileKind = 'markdown' | 'excalidraw' | 'svg' | 'html' | 'image' | 'text' | 'binary'
 
 export type KindGroup = 'markdown' | 'code' | 'data' | 'image' | 'diagram' | 'other'
 
@@ -25,6 +25,7 @@ const KIND_TRAITS: Record<FileKind, KindTraits> = {
   markdown: { editable: true, media: false, droppable: true },
   excalidraw: { editable: true, media: false, droppable: true },
   svg: { editable: true, media: false, droppable: true },
+  html: { editable: true, media: false, droppable: true },
   text: { editable: true, media: false, droppable: true },
   image: { editable: false, media: true, droppable: false },
   binary: { editable: false, media: true, droppable: false },
@@ -90,7 +91,8 @@ const EXTENSIONS: Record<string, ExtensionSpec> = {
   svelte: row('text', 'svelte', 'code', 'code', 'tone-code'),
   css: row('text', 'css', 'code', 'draft', 'tone-default'),
   scss: row('text', 'scss', 'code', 'draft', 'tone-default'),
-  html: row('text', 'html', 'code', 'draft', 'tone-default'),
+  html: row('html', 'html', 'code', 'code', 'tone-code'),
+  htm: row('html', 'html', 'code', 'code', 'tone-code'),
   tf: row('text', 'hcl', 'code', 'draft', 'tone-default'),
   proto: row('text', 'protobuf', 'code', 'draft', 'tone-default'),
   graphql: row('text', 'graphql', 'code', 'draft', 'tone-default'),
@@ -145,6 +147,7 @@ export function formatKind(path: string): string {
   if (type.kind === 'markdown') return 'Markdown'
   if (type.kind === 'excalidraw') return 'Excalidraw'
   if (type.kind === 'svg') return 'SVG'
+  if (type.kind === 'html') return 'HTML'
   if (type.kind === 'image') return 'Image'
   const extension = extname(path).toUpperCase()
   if (type.kind === 'binary') return extension || 'File'

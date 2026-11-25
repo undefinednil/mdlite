@@ -6,8 +6,18 @@ import {
   clampMainZoom,
   mainZoomLayout,
   stepMainZoom,
+  usesFullMainWidth,
   wheelMainZoom,
 } from './mainZoom'
+
+test('excalidraw and html view use the full width', () => {
+  assert.equal(usesFullMainWidth('excalidraw', 'view'), true)
+  assert.equal(usesFullMainWidth('excalidraw', 'edit'), true)
+  assert.equal(usesFullMainWidth('html', 'view'), true)
+  assert.equal(usesFullMainWidth('html', 'edit'), false)
+  assert.equal(usesFullMainWidth('markdown', 'view'), false)
+  assert.equal(usesFullMainWidth(null, 'view'), false)
+})
 
 test('the column is centred until it fills the pane, then the padding is zero', () => {
   assert.deepEqual(mainZoomLayout(1000, 60, 1), { width: 600, padding: 200 })
