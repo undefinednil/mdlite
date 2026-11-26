@@ -25,6 +25,7 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   { id: 'app.closeFile', label: 'Close page', hint: 'Close the open file, Settings or Trash', scope: 'app', defaultBinding: 'ctrl+w' },
   { id: 'app.save', label: 'Save', hint: 'Save the open file', scope: 'app', defaultBinding: 'ctrl+s' },
   { id: 'app.toggleEdit', label: 'Toggle view and edit', hint: 'Switch the open file between reading and editing', scope: 'app', defaultBinding: 'ctrl+shift+v, ctrl+shift+e' },
+  { id: 'app.togglePen', label: 'Presentation pen', hint: 'Open or close the drawing overlay in the reading view', scope: 'app', defaultBinding: 'ctrl+shift+w' },
   { id: 'app.focusTree', label: 'Focus the file tree', hint: 'Move keyboard focus to the sidebar', scope: 'app', defaultBinding: 'ctrl+h' },
   { id: 'app.focusMain', label: 'Focus the main area', hint: 'Move keyboard focus to the open file or folder', scope: 'app', defaultBinding: 'ctrl+l' },
   { id: 'editor.pageDown', label: 'Page down', hint: 'Move down one screen in the editor', scope: 'editor', defaultBinding: 'alt+down' },

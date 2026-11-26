@@ -409,6 +409,8 @@ mod tests {
         assert!(config.settings.word_wrap);
         assert_eq!(config.settings.line_numbers, "relative");
         assert_eq!(config.settings.sidebar_width, 296);
+        assert!(config.settings.show_mode_toggle);
+        assert!(config.settings.show_pen_button);
         assert_eq!(
             config.settings.shortcuts.get("app.recentFiles").unwrap(),
             "ctrl+alt+r"

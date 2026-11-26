@@ -86,6 +86,8 @@ export interface AppSettings {
   wordWrap: boolean
   mainWidth: number
   sidebarWidth: number
+  showModeToggle: boolean
+  showPenButton: boolean
   shortcuts: Record<string, string>
 }
 

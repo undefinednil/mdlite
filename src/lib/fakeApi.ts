@@ -398,6 +398,8 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
 
     rawUrl: (path: RelPath) => `fake://${absolutePath(path)}`,
 
+    assetUrl: (path: AbsPath) => `fake://${path}`,
+
     htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
 
     upload: async (dir: RelPath, file: File) => {

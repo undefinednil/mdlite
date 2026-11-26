@@ -5,9 +5,11 @@ import {
   MAIN_ZOOM_MIN,
   clampMainZoom,
   mainZoomLayout,
+  scrollForZoom,
   stepMainZoom,
   usesFullMainWidth,
   wheelMainZoom,
+  zoomAnchor,
 } from './mainZoom'
 
 test('excalidraw and html view use the full width', () => {
@@ -53,4 +55,18 @@ test('the wheel zooms gradually and clamps', () => {
   assert.ok(wheelMainZoom(1, -6, 1) > 1)
   assert.equal(wheelMainZoom(1, -100000), MAIN_ZOOM_MAX)
   assert.equal(wheelMainZoom(1, 100000), MAIN_ZOOM_MIN)
+})
+
+test('a zoom keeps the point at the viewport centre', () => {
+  const anchor = zoomAnchor(100, 200, 400, 300, 1000, 1200)
+  assert.equal(anchor.x, 0.3)
+  assert.equal(anchor.y, 350 / 1200)
+  assert.deepEqual(scrollForZoom(anchor, 400, 300, 2000, 2400), { left: 400, top: 550 })
+})
+
+test('a page that fits stays centred when it starts to overflow', () => {
+  const anchor = zoomAnchor(0, 0, 100, 100, 100, 100)
+  assert.deepEqual(anchor, { x: 0.5, y: 0.5 })
+  assert.deepEqual(scrollForZoom(anchor, 100, 100, 200, 200), { left: 50, top: 50 })
+  assert.deepEqual(scrollForZoom(anchor, 100, 100, 100, 100), { left: 0, top: 0 })
 })

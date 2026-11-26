@@ -1,4 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { AbsPath, AppSettings, RelPath, RootEntry, TreeNode } from '../shared/types'
 import { api } from './api'
@@ -22,15 +23,16 @@ import { useSessionSnapshot } from './lib/useSession'
 import logoUrl from './assets/logo.png'
 import { fileType, formatKind } from './lib/fileType'
 import { formatRelativeTime } from './lib/format'
-import { absPath, ancestors, baseName, dirname, isSameOrInside, relPath, remapPath } from './lib/paths'
+import { absPath, ancestors, baseName, dirname, fileName, isSameOrInside, relPath, remapPath } from './lib/paths'
 import { editorSettingsFromApp } from './lib/vimConfig'
 import { isMacPlatform, isRecordingShortcut, matchesCommand } from './lib/shortcuts'
 import { appShortcutAllowed } from './lib/keyboard'
 import { isClearInputKey, isTextControl } from './lib/inputKeys'
 import { createSmoothScroller, halfPageDelta, scrollRatio, scrollTopAtRatio } from './lib/scroll'
-import { cycleKeyAction } from './lib/cycle'
+import { cycleKeyAction, cycleNavAction } from './lib/cycle'
+import { droppedFileAction } from './lib/drop'
 import { activateFindHit, clearFindHits, findCaseSensitive, markFindHits } from './lib/findInView'
-import { mainZoomLayout, stepMainZoom, usesFullMainWidth, wheelMainZoom } from './lib/mainZoom'
+import { mainZoomLayout, scrollForZoom, stepMainZoom, usesFullMainWidth, wheelMainZoom, zoomAnchor, type ZoomAnchor } from './lib/mainZoom'
 import { pageMaxWidth } from './lib/pageWidth'
 import { penAvailable } from './lib/pen'
 import { SIDEBAR_DEFAULT, SIDEBAR_MAX, clampSidebarWidth, resolveSidebarWidth } from './lib/sidebar'
@@ -38,6 +40,9 @@ import { collectFiles, collectFolders, collectPaths, findNode } from './lib/tree
 import { applyVimSettings } from './lib/vim'
 
 const ExcalidrawView = lazy(() => import('./components/ExcalidrawView'))
+
+const MAX_SCRATCH_BYTES = 4_000_000
+const MAX_UPLOAD_BYTES = 60 * 1024 * 1024
 
 const sessionDialogs: SessionDialogs = {
   askSave,
@@ -107,6 +112,10 @@ export default function App() {
   const mainRef = useRef<HTMLElement>(null)
   const zoomRef = useRef<HTMLDivElement>(null)
   const zoomPathRef = useRef<string | null>(null)
+  const mainZoomRef = useRef(mainZoom)
+  mainZoomRef.current = mainZoom
+  const zoomAnchorRef = useRef<ZoomAnchor | null>(null)
+  const fullMainWidthRef = useRef(false)
   const findHitsRef = useRef<HTMLElement[]>([])
   const editorFindRef = useRef<(() => void) | null>(null)
   const smoothScrollRef = useRef(createSmoothScroller())
@@ -240,6 +249,45 @@ export default function App() {
     return (body.querySelector('.cm-scroller') as HTMLElement | null) ?? body
   }, [])
 
+  const setZoom = useCallback(
+    (next: number) => {
+      if (fullMainWidthRef.current || next === mainZoomRef.current) return
+      if (!zoomAnchorRef.current) {
+        const element = activeScroller()
+        if (element) {
+          zoomAnchorRef.current = zoomAnchor(
+            element.scrollLeft,
+            element.scrollTop,
+            element.clientWidth,
+            element.clientHeight,
+            element.scrollWidth,
+            element.scrollHeight,
+          )
+        }
+      }
+      mainZoomRef.current = next
+      setMainZoom(next)
+    },
+    [activeScroller],
+  )
+
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current
+    if (!anchor) return
+    zoomAnchorRef.current = null
+    const element = activeScroller()
+    if (!element) return
+    const next = scrollForZoom(
+      anchor,
+      element.clientWidth,
+      element.clientHeight,
+      element.scrollWidth,
+      element.scrollHeight,
+    )
+    element.scrollLeft = next.left
+    element.scrollTop = next.top
+  }, [mainZoom, activeScroller])
+
   const readScrollRatio = useCallback(() => {
     const snapshot = session.getSnapshot()
     const current = snapshot.document
@@ -279,6 +327,42 @@ export default function App() {
     const path = session.getSnapshot().document?.path ?? selectedRef.current
     if (path) scrollRatios.current.set(path, readScrollRatio())
   }, [session, readScrollRatio])
+
+  const penContentScrollTop = useCallback(() => {
+    const scroller = scrollRef.current?.querySelector<HTMLElement>('.cm-scroller')
+    if (scroller) return scroller.scrollTop
+    const snapshot = session.getSnapshot()
+    if (
+      snapshot.document &&
+      snapshot.mode === 'view' &&
+      fileType(snapshot.document.path).kind === 'html'
+    ) {
+      return htmlViewRef.current?.scrollTop() ?? 0
+    }
+    return 0
+  }, [session])
+
+  const penContentScrollBy = useCallback((left: number, top: number) => {
+    const scroller = scrollRef.current?.querySelector<HTMLElement>('.cm-scroller')
+    if (scroller) {
+      scroller.scrollLeft += left
+      scroller.scrollTop += top
+      return
+    }
+    const snapshot = session.getSnapshot()
+    if (
+      snapshot.document &&
+      snapshot.mode === 'view' &&
+      fileType(snapshot.document.path).kind === 'html'
+    ) {
+      htmlViewRef.current?.scrollBy(top)
+      return
+    }
+    const body = scrollRef.current
+    if (!body) return
+    body.scrollLeft += left
+    body.scrollTop += top
+  }, [session])
 
   useEffect(() => {
     if (status !== 'ready' || !doc) return
@@ -330,6 +414,7 @@ export default function App() {
         })
         return
       }
+      setPenOpen(false)
       const dir = dirname(path)
       focusOnReadyRef.current = focusMain
       setShowSettings(false)
@@ -357,6 +442,7 @@ export default function App() {
     async (dir: RelPath) => {
       if (!(await confirmSave())) return
       rememberScroll()
+      setPenOpen(false)
       focusOnReadyRef.current = false
       setShowSettings(false)
       setShowTrash(false)
@@ -382,6 +468,7 @@ export default function App() {
     if (!openPath) return
     if (!(await confirmSave())) return
     rememberScroll()
+    setPenOpen(false)
     const folder = snapshot.scratch ? null : dirname(openPath)
     await session.close()
     setSelected(null)
@@ -459,6 +546,7 @@ export default function App() {
   const resetForRoot = useCallback(() => {
     focusOnReadyRef.current = false
     void session.reset()
+    setPenOpen(false)
     setRecents([])
     setCycle(null)
     scrollRatios.current.clear()
@@ -681,6 +769,8 @@ export default function App() {
     setCycle({ items, index: 0 })
   }, [])
 
+  const closePen = useCallback(() => setPenOpen(false), [])
+
   const runAppShortcut = useCallback((event: KeyboardEvent): boolean => {
     if (matchesCommand(settings.shortcuts, 'app.focusTree', event)) {
       event.preventDefault()
@@ -698,6 +788,12 @@ export default function App() {
       event.preventDefault()
       event.stopPropagation()
       if (session.getSnapshot().document) void toggleMode()
+      return true
+    }
+    if (matchesCommand(settings.shortcuts, 'app.togglePen', event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (penEnabled) setPenOpen((open) => !open)
       return true
     }
     if (matchesCommand(settings.shortcuts, 'app.findFile', event)) {
@@ -744,7 +840,7 @@ export default function App() {
       return true
     }
     return false
-  }, [settings.shortcuts, toggleMode, focusMain, save, closeFile, closeSettings, closeTrash, showSettings, showTrash])
+  }, [settings.shortcuts, toggleMode, focusMain, save, closeFile, closeSettings, closeTrash, showSettings, showTrash, penEnabled])
 
   const closeFind = useCallback(() => {
     setFindOpen(false)
@@ -922,11 +1018,11 @@ export default function App() {
       if (event.target instanceof Element && event.target.closest('.excalidraw-host')) return
       if (!event.ctrlKey && !event.metaKey) return
       event.preventDefault()
-      setMainZoom((current) => wheelMainZoom(current, event.deltaY, event.deltaMode))
+      setZoom(wheelMainZoom(mainZoomRef.current, event.deltaY, event.deltaMode))
     }
     element.addEventListener('wheel', onWheel, { passive: false })
     return () => element.removeEventListener('wheel', onWheel)
-  }, [])
+  }, [setZoom])
 
   useEffect(() => {
     const onZoomKey = (event: KeyboardEvent) => {
@@ -934,27 +1030,29 @@ export default function App() {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return
       if (event.key === '+' || event.key === '=') {
         event.preventDefault()
-        setMainZoom((current) => stepMainZoom(current, 1))
+        setZoom(stepMainZoom(mainZoomRef.current, 1))
         return
       }
       if (event.key === '-' || event.key === '_') {
         event.preventDefault()
-        setMainZoom((current) => stepMainZoom(current, -1))
+        setZoom(stepMainZoom(mainZoomRef.current, -1))
         return
       }
       if (event.key === '0') {
         event.preventDefault()
-        setMainZoom(1)
+        setZoom(1)
       }
     }
     window.addEventListener('keydown', onZoomKey)
     return () => window.removeEventListener('keydown', onZoomKey)
-  }, [])
+  }, [setZoom])
 
   useEffect(() => {
     const path = doc?.path ?? null
     if (zoomPathRef.current === path) return
     zoomPathRef.current = path
+    mainZoomRef.current = 1
+    zoomAnchorRef.current = null
     setMainZoom(1)
     setPenOpen(false)
   }, [doc?.path])
@@ -1030,7 +1128,7 @@ export default function App() {
 
   const openScratchFile = useCallback(async (file: File) => {
     if (!(await confirmSave())) return
-    if (file.size > 4_000_000) {
+    if (file.size > MAX_SCRATCH_BYTES) {
       setError('File is too large to open')
       return
     }
@@ -1040,6 +1138,7 @@ export default function App() {
       return
     }
     rememberScroll()
+    setPenOpen(false)
     const hasExtension = /\.[^./\\]+$/.test(file.name)
     let content: string
     if (hasExtension) {
@@ -1065,6 +1164,76 @@ export default function App() {
     setJump(null)
   }, [confirmSave, session, rememberScroll])
 
+  const fileFromPath = useCallback(async (path: AbsPath, maxBytes: number): Promise<File | null> => {
+    try {
+      const response = await fetch(api.assetUrl(path))
+      if (!response.ok) throw new Error(`cannot read ${fileName(path)}`)
+      const length = Number(response.headers.get('content-length') ?? '0')
+      if (length > maxBytes) {
+        setError('File is too large to open')
+        return null
+      }
+      const bytes = await response.arrayBuffer()
+      if (bytes.byteLength > maxBytes) {
+        setError('File is too large to open')
+        return null
+      }
+      return new File([bytes], fileName(path))
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }, [])
+
+  const handleDroppedPaths = useCallback(
+    async (paths: string[]) => {
+      const current = session.getSnapshot()
+      const action = droppedFileAction(paths, Boolean(current.document && current.mode === 'edit'))
+      if (!action) return
+      if (action.kind === 'media') {
+        for (const path of action.paths) {
+          const file = await fileFromPath(absPath(path), MAX_UPLOAD_BYTES)
+          if (!file) continue
+          const text = await insertMedia(file)
+          if (text) insertTextRef.current?.(text)
+        }
+        return
+      }
+      const file = await fileFromPath(absPath(action.path), MAX_SCRATCH_BYTES)
+      if (file) await openScratchFile(file)
+    },
+    [fileFromPath, insertMedia, openScratchFile, session],
+  )
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let disposed = false
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload
+        if (payload.type === 'enter' || payload.type === 'over') {
+          setDragging(true)
+          return
+        }
+        if (payload.type === 'leave') {
+          setDragging(false)
+          return
+        }
+        if (payload.type === 'drop') {
+          setDragging(false)
+          void handleDroppedPaths(payload.paths)
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn()
+        else unlisten = fn
+      })
+    return () => {
+      disposed = true
+      unlisten?.()
+    }
+  }, [handleDroppedPaths])
+
   useEffect(() => {
     const prevent = (event: DragEvent) => event.preventDefault()
     window.addEventListener('dragover', prevent)
@@ -1079,11 +1248,13 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (isDialogOpen() || isRecordingShortcut() || event.isComposing) return
       const current = cycleRef.current
+      const nav = current ? cycleNavAction(event) : null
       const action = cycleKeyAction({
         key: event.key,
         isOpen: Boolean(current),
-        next: matchesCommand(settings.shortcuts, 'app.recentFiles', event),
-        previous: matchesCommand(settings.shortcuts, 'app.recentFilesBack', event),
+        next: nav === 'next' || matchesCommand(settings.shortcuts, 'app.recentFiles', event),
+        previous:
+          nav === 'previous' || matchesCommand(settings.shortcuts, 'app.recentFilesBack', event),
       })
       if (!action) return
 
@@ -1272,6 +1443,8 @@ export default function App() {
     doc !== null &&
     !doc.binary &&
     (kind === 'markdown' || kind === 'svg' || kind === 'html')
+  const showModeButton = showFloating && settings.showModeToggle
+  const showPen = penEnabled && settings.showPenButton
 
   const body = (() => {
     if (showTrash) {
@@ -1403,6 +1576,7 @@ export default function App() {
   })()
 
   const fullMainWidth = !showSettings && !showTrash && usesFullMainWidth(kind, mode)
+  fullMainWidthRef.current = fullMainWidth
   const zoom = fullMainWidth ? 1 : mainZoom
   const layout = mainZoomLayout(
     paneWidth,
@@ -1423,36 +1597,6 @@ export default function App() {
           '--sidebar-width': `${sidebarWidth}px`,
         } as CSSProperties
       }
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes('Files')) return
-        event.preventDefault()
-        setDragging(true)
-      }}
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-        setDragging(false)
-      }}
-      onDrop={(event) => {
-        event.preventDefault()
-        setDragging(false)
-        if ((event.target as HTMLElement).closest('.cm-editor')) return
-        const files = Array.from(event.dataTransfer.files ?? [])
-        if (!files.length) return
-        const media = files.filter(
-          (file) => file.type.startsWith('image/') || file.type.startsWith('video/'),
-        )
-        const current = session.getSnapshot()
-        if (media.length && current.document && current.mode === 'edit') {
-          void (async () => {
-            for (const file of media) {
-              const text = await insertMedia(file)
-              if (text) insertTextRef.current?.(text)
-            }
-          })()
-          return
-        }
-        void openScratchFile(files[0])
-      }}
     >
       <aside className="sidebar">
         <div className="sidebar-head">
@@ -1675,11 +1819,21 @@ export default function App() {
           />
         )}
 
-        {penOpen && <PenOverlay scrollRef={scrollRef} onClose={() => setPenOpen(false)} />}
+        {doc && (
+          <PenOverlay
+            key={doc.path}
+            active={penOpen && penEnabled}
+            scrollRef={scrollRef}
+            zoom={zoom}
+            contentScrollTop={penContentScrollTop}
+            contentScrollBy={penContentScrollBy}
+            onClose={closePen}
+          />
+        )}
 
-        {(showFloating || penEnabled) && (
+        {(showModeButton || showPen) && (
           <div className="floating-actions">
-            {penEnabled && (
+            {showPen && (
               <button
                 type="button"
                 className={`floating-pen ${penOpen ? 'active' : ''}`}
@@ -1691,7 +1845,7 @@ export default function App() {
                 <span className="material-symbols-rounded">stylus</span>
               </button>
             )}
-            {showFloating && (
+            {showModeButton && (
               <button
                 type="button"
                 className="floating-toggle"
@@ -1725,7 +1879,9 @@ export default function App() {
           }}
         >
           <div className="cycle-card">
-            <div className="cycle-hint">Recent files — click a file or press Enter, Esc to cancel</div>
+            <div className="cycle-hint">
+              Recent files — click a file, ⌃N/⌃P to move, Enter to open, Esc to cancel
+            </div>
             {cycle.items.map((path, index) => (
               <button
                 key={path}

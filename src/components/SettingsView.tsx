@@ -47,7 +47,7 @@ const TABS: { key: Tab; label: string; icon: string; title: string; subtitle: st
     label: 'Editor',
     icon: 'edit_note',
     title: 'Editor',
-    subtitle: 'Word wrap, indentation, search and layout widths.',
+    subtitle: 'Word wrap, layout, view controls and search.',
   },
   {
     key: 'vim',
@@ -587,6 +587,53 @@ export function SettingsView({
                       }}
                     />
                     <span>px</span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <section className="settings-section">
+              <h2 className="settings-section-title">View controls</h2>
+              <div className="setting-list">
+                <div className="setting-row">
+                  <div className="setting-copy">
+                    <div className="setting-title">View/edit button</div>
+                    <p className="setting-help">
+                      Show the floating Edit/View button in the reading view. The toggle shortcut still
+                      works when the button is hidden.
+                    </p>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      aria-label="View/edit button"
+                      checked={draft.showModeToggle}
+                      onChange={(event) =>
+                        update((current) => ({ ...current, showModeToggle: event.target.checked }))
+                      }
+                    />
+                    <span className="switch-track" />
+                  </label>
+                </div>
+
+                <div className="setting-row">
+                  <div className="setting-copy">
+                    <div className="setting-title">Paint button</div>
+                    <p className="setting-help">
+                      Show the floating pen button in the reading view. The pen shortcut still works
+                      when the button is hidden.
+                    </p>
+                  </div>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      aria-label="Paint button"
+                      checked={draft.showPenButton}
+                      onChange={(event) =>
+                        update((current) => ({ ...current, showPenButton: event.target.checked }))
+                      }
+                    />
+                    <span className="switch-track" />
                   </label>
                 </div>
               </div>

@@ -54,7 +54,7 @@ Images and video are served through the Tauri asset protocol, because a webview 
 
 ## Behaviour
 
-One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Drag a tree row onto a folder to move it, or onto the empty tree space to move it to the root. The sidebar history button opens the recent-files list. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations, with the drawing staying put while the note scrolls. See [Features](docs/features.md) for each area and its limits.
+One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Drag a tree row onto a folder to move it, or onto the empty tree space to move it to the root. The sidebar history button opens the recent-files list. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations; the drawing is anchored to the note, follows its scroll and the app's zoom, and stays until the open file changes or the pen is cleared. See [Features](docs/features.md) for each area and its limits.
 
 ## Settings
 
@@ -68,8 +68,8 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 |---|---|
 | `⌃E` | Fuzzy find a file |
 | `⌃G` | Search file contents (grep) |
-| `⌃N` / `⌃P` | Move down / up in the tree, folder table and finder |
-| `⌃Tab` | Cycle through the last 5 opened files; press Enter to open the highlighted one and Esc to cancel (`⌃⇧Tab` goes backwards; both are customizable) |
+| `⌃N` / `⌃P` | Move down / up in the tree, folder table, finder and recent-file menu |
+| `⌃Tab` | Cycle through the last 5 opened files; `⌃N`/`⌃P` move the highlight, Enter opens it and Esc cancels (`⌃⇧Tab` goes backwards; both are customizable) |
 | `j` `k` `h` `l` `g` `G` | Tree navigation: down, up, collapse, expand, top, bottom |
 | `Space` | Tree: expand or collapse the highlighted folder |
 | `⌃←` | Tree: collapse every folder, including while a filter is active |
@@ -85,6 +85,7 @@ Shortcuts can be changed in Settings → Shortcuts. The table shows the defaults
 | `⌥⇧↓` / `⌥⇧↑` | Move the cursor to the last / first visible line without scrolling |
 | `⌃H` / `⌃L` | Focus the file tree / the main area |
 | `⌃⇧V` | Toggle edit / view (also `⌃⇧E`) |
+| `⌃⇧W` | Open or close the presentation pen in the reading view |
 | `⌃S` | Save |
 | `⌃F` | Find in the open note: the find bar in the reading view, the search panel in the editor |
 | `⌃W` | Close the open file and show its folder, or close Settings or Trash |

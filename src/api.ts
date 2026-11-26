@@ -127,6 +127,7 @@ export interface Api {
   openUrl(url: string): Promise<void>
   grep(query: string, opts?: GrepOptions): Promise<GrepResponse>
   rawUrl(path: RelPath): string
+  assetUrl(path: AbsPath): string
   htmlUrl(path: RelPath): string
   upload(dir: RelPath, file: File): Promise<{ path: RelPath }>
   create(path: RelPath, type: 'file' | 'dir'): Promise<{ path: RelPath }>
@@ -254,6 +255,8 @@ export function createDesktopApi(client: ApiClient = tauriClient): Api {
       }).then(brandGrep),
 
     rawUrl: (path: RelPath) => client.assetUrl(absolutePath(path)),
+
+    assetUrl: (path: AbsPath) => client.assetUrl(path),
 
     htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
 

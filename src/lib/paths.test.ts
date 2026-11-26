@@ -5,6 +5,7 @@ import {
   absPath,
   absolutePathFrom,
   contentHash,
+  fileName,
   isSameOrInside,
   pasteDirectory,
   relPath,
@@ -20,6 +21,12 @@ test('brands and normalises relative paths', () => {
 
 test('brands absolute paths and keeps them unchanged', () => {
   assert.equal(absPath('/vault/notes/a.md'), '/vault/notes/a.md')
+})
+
+test('reads the file name from POSIX and Windows paths', () => {
+  assert.equal(fileName('/vault/notes/a.md'), 'a.md')
+  assert.equal(fileName('C:\\vault\\notes\\a.md'), 'a.md')
+  assert.equal(fileName('a.md'), 'a.md')
 })
 
 test('builds an absolute path from the active root', () => {

@@ -38,6 +38,19 @@ export function penPoint(
   return { x: clientX - rect.left, y: clientY - rect.top }
 }
 
+/** Converts a pointer position on the zoomed content into unzoomed content space. */
+export function penContentPoint(
+  rect: { left: number; top: number },
+  scale: number,
+  clientX: number,
+  clientY: number,
+  scrollTop = 0,
+): PenPoint {
+  const point = penPoint(rect, clientX, clientY)
+  const safe = scale > 0 ? scale : 1
+  return { x: point.x / safe, y: point.y / safe + scrollTop }
+}
+
 export interface PenHistory {
   states: PenStroke[][]
   index: number

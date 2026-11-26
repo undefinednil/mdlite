@@ -25,6 +25,8 @@ test('a fragment without a doctype or body still gets the base and the script', 
   assert.ok(doc.startsWith('<base href="asset://localhost//root/">'))
   assert.ok(doc.includes('data-mdlite-scroll'))
   assert.ok(doc.includes("type: 'key'"))
+  assert.ok(doc.includes('mdlite-zoom'))
+  assert.ok(doc.includes('applyZoom'))
 })
 
 test('the base is escaped for the attribute', () => {

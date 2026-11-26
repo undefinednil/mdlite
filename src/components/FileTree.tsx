@@ -122,13 +122,14 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [collapsed, setCollapsed] = useState<Set<RelPath>>(() => new Set())
   const [dropTarget, setDropTarget] = useState<RelPath | null>(null)
+  const [draggingTargets, setDraggingTargets] = useState<RelPath[]>([])
 
   const selection = useMemo(() => createSelection<RelPath>(remapPath), [])
   const { cursor, marked } = useSelectionSnapshot(selection)
   const { clipboard } = useFileOperationsSnapshot(operations)
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const dragTargetsRef = useRef<RelPath[]>([])
+  const draggedRef = useRef(false)
 
   const filterActive = useMemo(() => {
     const needle = filter.trim()
@@ -333,6 +334,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
   }
 
   const handleRowClick = (row: TreeRow, event: React.MouseEvent) => {
+    if (draggedRef.current) return
     scrollRef.current?.focus()
     const index = rows.findIndex((item) => item.node.path === row.node.path)
     if (event.shiftKey) {
@@ -435,76 +437,64 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
     finishMove(result)
   }
 
-  const canDrop = (destination: RelPath): boolean => {
-    const targets = dragTargetsRef.current
+  const canDrop = (targets: RelPath[], destination: RelPath): boolean => {
     if (!targets.length) return false
     return targets.every(
       (path) => destination !== path && !destination.startsWith(`${path}/`),
     )
   }
 
-  const startRowDrag = (event: React.DragEvent<HTMLDivElement>, path: RelPath) => {
+  const moveTargetsRef = useRef<(targets: RelPath[], destination?: RelPath) => Promise<void>>(
+    async () => {},
+  )
+  moveTargetsRef.current = moveTargets
+
+  const dropHit = (x: number, y: number): { path: RelPath; dir: boolean } | null => {
+    const element = document.elementFromPoint(x, y)
+    const row = element?.closest<HTMLElement>('.tree-row')
+    if (row?.dataset.path) {
+      return { path: row.dataset.path as RelPath, dir: row.dataset.type === 'dir' }
+    }
+    if (element?.closest('.tree-scroll')) return { path: relPath(''), dir: true }
+    return null
+  }
+
+  const startRowDrag = (event: React.PointerEvent<HTMLDivElement>, path: RelPath) => {
+    if (event.button !== 0 || event.isPrimary === false) return
+    if ((event.target as HTMLElement).closest('button, input, textarea, select, a')) return
     const targets = actionTargets(path)
     if (!targets.length) return
-    dragTargetsRef.current = targets
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', path)
-    event.dataTransfer.setData('application/x-mdlite-paths', JSON.stringify(targets))
-  }
-
-  const endRowDrag = () => {
-    dragTargetsRef.current = []
-    setDropTarget(null)
-  }
-
-  const overRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath, isDir: boolean) => {
-    if (!isDir || !canDrop(path)) return
-    event.preventDefault()
-    event.stopPropagation()
-    event.dataTransfer.dropEffect = 'move'
-    if (dropTarget !== path) setDropTarget(path)
-  }
-
-  const leaveRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    if (dropTarget === path) setDropTarget(null)
-  }
-
-  const dropRow = (event: React.DragEvent<HTMLDivElement>, path: RelPath, isDir: boolean) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const targets = dragTargetsRef.current
-    const allowed = isDir && canDrop(path)
-    dragTargetsRef.current = []
-    setDropTarget(null)
-    if (!allowed) return
-    void moveTargets(targets, path)
-  }
-
-  const overTree = (event: React.DragEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('.tree-row')) return
-    const root = relPath('')
-    if (!canDrop(root)) return
-    event.preventDefault()
-    event.dataTransfer.dropEffect = 'move'
-    if (dropTarget !== root) setDropTarget(root)
-  }
-
-  const leaveTree = (event: React.DragEvent<HTMLDivElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
-    if (dropTarget === relPath('')) setDropTarget(null)
-  }
-
-  const dropTree = (event: React.DragEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('.tree-row')) return
-    event.preventDefault()
-    const root = relPath('')
-    const targets = dragTargetsRef.current
-    const allowed = canDrop(root)
-    dragTargetsRef.current = []
-    setDropTarget(null)
-    if (!allowed) return
-    void moveTargets(targets, root)
+    const startX = event.clientX
+    const startY = event.clientY
+    let active = false
+    const onMove = (move: PointerEvent) => {
+      if (!active) {
+        if (Math.hypot(move.clientX - startX, move.clientY - startY) < 4) return
+        active = true
+        setDraggingTargets(targets)
+      }
+      move.preventDefault()
+      const hit = dropHit(move.clientX, move.clientY)
+      const next = hit?.dir && canDrop(targets, hit.path) ? hit.path : null
+      setDropTarget((current) => (current === next ? current : next))
+    }
+    const onUp = (up: PointerEvent) => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+      setDraggingTargets([])
+      setDropTarget(null)
+      if (!active) return
+      draggedRef.current = true
+      window.setTimeout(() => { draggedRef.current = false }, 0)
+      const hit = dropHit(up.clientX, up.clientY)
+      if (hit?.dir && canDrop(targets, hit.path)) {
+        void moveTargetsRef.current(targets, hit.path)
+      }
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
   const move = async (path?: RelPath) => moveTargets(actionTargets(path))
@@ -931,9 +921,6 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
         ref={scrollRef}
         tabIndex={0}
         onKeyDown={onKeyDown}
-        onDragOver={overTree}
-        onDragLeave={leaveTree}
-        onDrop={dropTree}
         onContextMenu={(event) => {
           if ((event.target as HTMLElement).closest('.tree-row')) return
           event.preventDefault()
@@ -989,7 +976,7 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
               return (
                 <div
                   key={row.node.path}
-                  className={view.className}
+                  className={`${view.className}${draggingTargets.includes(row.node.path) ? ' dragging' : ''}`}
                   style={{
                     position: 'absolute',
                     top: index * ROW,
@@ -998,14 +985,11 @@ export const FileTree = forwardRef<FileTreeHandle, Props>(function FileTree({
                     right: 0,
                     paddingLeft: 8 + row.depth * 13,
                   }}
-                  draggable
+                  data-path={row.node.path}
+                  data-type={row.node.type}
+                  onPointerDown={(event) => startRowDrag(event, row.node.path)}
                   onClick={(event) => handleRowClick(row, event)}
                   onContextMenu={(event) => openRowContextMenu(row, event)}
-                  onDragStart={(event) => startRowDrag(event, row.node.path)}
-                  onDragEnd={endRowDrag}
-                  onDragOver={(event) => overRow(event, row.node.path, isDir)}
-                  onDragLeave={(event) => leaveRow(event, row.node.path)}
-                  onDrop={(event) => dropRow(event, row.node.path, isDir)}
                   title={row.node.path}
                 >
                   {twisty ? (

@@ -1,4 +1,4 @@
-import { extname } from './paths'
+import { extname, fileName } from './paths'
 
 export type FileKind = 'markdown' | 'excalidraw' | 'svg' | 'html' | 'image' | 'text' | 'binary'
 
@@ -109,6 +109,30 @@ const EXTENSIONS: Record<string, ExtensionSpec> = {
   gitignore: row('text', 'text', 'code', 'draft', 'tone-default'),
   cookies: row('text', 'text', 'code', 'draft', 'tone-default'),
   lock: row('text', 'text', 'code', 'draft', 'tone-default'),
+}
+
+const MEDIA_EXTENSIONS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'svg',
+  'avif',
+  'bmp',
+  'mp4',
+  'webm',
+  'mov',
+  'm4v',
+  'ogv',
+])
+
+/** Whether an OS path names an image or video the upload command accepts. */
+export function isMediaPath(path: string): boolean {
+  const name = fileName(path)
+  const idx = name.lastIndexOf('.')
+  if (idx <= 0) return false
+  return MEDIA_EXTENSIONS.has(name.slice(idx + 1).toLowerCase())
 }
 
 export function fileType(path: string): FileType {

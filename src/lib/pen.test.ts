@@ -12,6 +12,7 @@ import {
   distanceToSegment,
   eraseAt,
   penAvailable,
+  penContentPoint,
   penPoint,
   penStrokes,
   redoPen,
@@ -50,6 +51,14 @@ test('pen points map from client coordinates to canvas coordinates', () => {
   const rect = { left: 40, top: 60 }
   assert.deepEqual(penPoint(rect, 140, 160), { x: 100, y: 100 })
   assert.deepEqual(penPoint(rect, 0, 0), { x: -40, y: -60 })
+})
+
+test('content points undo the zoom scale', () => {
+  const rect = { left: 40, top: 60 }
+  assert.deepEqual(penContentPoint(rect, 2, 140, 160), { x: 50, y: 50 })
+  assert.deepEqual(penContentPoint(rect, 0, 140, 160), { x: 100, y: 100 })
+  assert.deepEqual(penContentPoint(rect, 2, 140, 160, 100), { x: 50, y: 150 })
+  assert.deepEqual(penContentPoint(rect, 1, 140, 160, 100), { x: 100, y: 200 })
 })
 
 test('undo and redo walk the committed states', () => {

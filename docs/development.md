@@ -84,14 +84,15 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `editorKeys.test.ts` covers editor key handling with `jsdom`.
 - `editorTheme.test.ts` covers the focused-editor outline with `jsdom`.
 - `findInView.test.ts` covers reading-view find marking, clearing and the active match.
-- `mainZoom.test.ts` covers the main-area zoom steps, wheel and centred page layout.
-- `cycle.test.ts` covers the recent-file menu keys: the configured next/previous bindings step, Enter opens and Escape cancels.
+- `mainZoom.test.ts` covers the main-area zoom steps, wheel, centred page layout and the zoom anchor.
+- `cycle.test.ts` covers the recent-file menu keys: the configured next/previous bindings step, Ctrl+N/Ctrl+P step the open menu, Enter opens and Escape cancels.
 - `inputKeys.test.ts` covers the Ctrl+U clear-input key and which text controls it applies to.
 - `sidebar.test.ts` covers the sidebar width clamp and the 0-hidden state.
 - `scroll.test.ts` covers the smooth scroller steps and the ratio used to remember a file's position.
 - `pageWidth.test.ts` covers reading the page cap from the stylesheet.
-- `pen.test.ts` covers pen availability, stroke history with undo and redo, the whole-stroke eraser and point mapping.
+- `pen.test.ts` covers pen availability, stroke history with undo and redo, the whole-stroke eraser, point mapping and the content-space/zoom transform.
 - `platform.test.ts` covers the Reveal label per platform.
+- `tauriConfig.test.ts` keeps `dragDropEnabled: true`, so Tauri reports files dropped from outside the app.
 - `markdown.test.ts` covers link rewriting, Mermaid zoom and the Markdown pipeline with `jsdom`.
 - `htmlDocument.test.ts` covers the preview base URL, the injected scroll bridge and the key forwarding rules.
 - `vimScroll.test.ts` covers the Vim half-page scroll when the target line is outside the rendered viewport.
@@ -120,7 +121,7 @@ This catches target-specific code errors but does not produce an installer. Buil
 
 ## Self-test
 
-The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle and button, tree drag-move, page close, sidebar width, Ctrl+U and Escape. On macOS the runner brings the spawned window to the front; a background webview throttles timers, and the self-test would not finish. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
+The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle, button and Ctrl+N/Ctrl+P menu keys, tree drag-move, a native file drop, page close, sidebar width, view-button toggles, the pen shortcut and persistence, editor pen zoom, Ctrl+U and Escape. The `tree.dragMove` check drives the tree's pointer drag, `asset.text` reads a file through the same asset URL that external drops use, and `drop.native` emits Tauri's drag-drop event with an absolute path and verifies the temporary file opens. `tauriConfig.test.ts` guards the `dragDropEnabled: true` setting that keeps external drops flowing. On macOS the runner brings the spawned window to the front; a background webview throttles timers, and the self-test would not finish. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
 
 The manual steps remain useful when you want to inspect the full report:
 

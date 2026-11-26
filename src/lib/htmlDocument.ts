@@ -1,5 +1,12 @@
-const SCROLL_SCRIPT = `<script data-mdlite-scroll>(function () {
+export const HTML_SCROLL_EVENT = 'mdlite-html-scroll'
+
+const SCROLL_SCRIPT = `<script data-mdlite-scroll>/* mdlite-zoom */(function () {
   var behavior = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+  var zoom = 1
+  function applyZoom(next) {
+    zoom = Math.min(3, Math.max(0.5, Math.round(next * 100) / 100))
+    document.documentElement.style.zoom = String(zoom)
+  }
   function maxScroll() {
     var root = document.documentElement
     var body = document.body
@@ -11,10 +18,36 @@ const SCROLL_SCRIPT = `<script data-mdlite-scroll>(function () {
     return max > 0 ? window.scrollY / max : 0
   }
   window.addEventListener('scroll', function () {
-    window.parent.postMessage({ source: 'mdlite-html', type: 'scroll', ratio: ratio() }, '*')
+    window.parent.postMessage({ source: 'mdlite-html', type: 'scroll', ratio: ratio(), top: window.scrollY }, '*')
   }, { passive: true })
+  window.addEventListener('wheel', function (event) {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+    event.preventDefault()
+    var unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 800 : 1
+    applyZoom(zoom * Math.exp(-event.deltaY * unit * 0.002))
+  }, { passive: false })
   window.addEventListener('keydown', function (event) {
     if (event.key === 'Control' || event.key === 'Shift' || event.key === 'Alt' || event.key === 'Meta') return
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.isComposing) {
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault()
+        event.stopPropagation()
+        applyZoom(zoom + 0.1)
+        return
+      }
+      if (event.key === '-' || event.key === '_') {
+        event.preventDefault()
+        event.stopPropagation()
+        applyZoom(zoom - 0.1)
+        return
+      }
+      if (event.key === '0') {
+        event.preventDefault()
+        event.stopPropagation()
+        applyZoom(1)
+        return
+      }
+    }
     var target = event.target
     var typing = !!(target && target.closest && target.closest('input, textarea, select, [contenteditable="true"]'))
     window.parent.postMessage({

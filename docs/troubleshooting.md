@@ -27,6 +27,12 @@ Remove the app from the Dock and add it back if the old icon remains.
 - Development builds allow the webview devtools. Press `Cmd+Alt+I` on macOS or `Ctrl+Shift+I` on Windows to see JavaScript errors.
 - If the window opens but the tree is empty, open Settings and confirm the root folder exists and is readable.
 
+## Dropping a file from outside the app does nothing
+
+**Cause:** Tauri's native drag-drop handler is off, or the window does not listen to its drop event. The handler is what reports the OS paths of files dragged in from Finder or Explorer; the webview's HTML5 drop events cannot see those files in Tauri.
+
+**Fix:** Keep `"dragDropEnabled": true` in the window section of `src-tauri/tauri.conf.json`, keep the `onDragDropEvent` listener in `App.tsx`, and rebuild. The tree drag-move is separate: it uses pointer events, so it keeps working while the native handler is on.
+
 ## A file will not open: "file is too large to open"
 
 **Cause:** Files opened from a root are read by `read_file`, which rejects text over 8 MiB. SVG and Excalidraw are text and go through the same cap. Raster images and video open through the asset protocol and are not affected.

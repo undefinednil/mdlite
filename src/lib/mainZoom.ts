@@ -25,6 +25,40 @@ export function wheelMainZoom(zoom: number, deltaY: number, deltaMode = 0): numb
   return clampMainZoom(zoom * Math.exp(-pixels * 0.002))
 }
 
+export interface ZoomAnchor {
+  x: number
+  y: number
+}
+
+/** The point at the viewport centre, as a ratio of the scrollable content. */
+export function zoomAnchor(
+  scrollLeft: number,
+  scrollTop: number,
+  clientWidth: number,
+  clientHeight: number,
+  scrollWidth: number,
+  scrollHeight: number,
+): ZoomAnchor {
+  return {
+    x: scrollWidth > 0 ? (scrollLeft + clientWidth / 2) / scrollWidth : 0.5,
+    y: scrollHeight > 0 ? (scrollTop + clientHeight / 2) / scrollHeight : 0.5,
+  }
+}
+
+/** Scroll offsets that put the anchored point back at the viewport centre. */
+export function scrollForZoom(
+  anchor: ZoomAnchor,
+  clientWidth: number,
+  clientHeight: number,
+  scrollWidth: number,
+  scrollHeight: number,
+): { left: number; top: number } {
+  return {
+    left: anchor.x * scrollWidth - clientWidth / 2,
+    top: anchor.y * scrollHeight - clientHeight / 2,
+  }
+}
+
 export interface MainZoomLayout {
   /** Width of the zoomed page before zoom, in CSS px. */
   width: number

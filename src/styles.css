@@ -416,6 +416,10 @@ button {
   color: var(--accent-strong);
 }
 
+.tree-row.dragging {
+  opacity: 0.5;
+}
+
 .tree-row.drop-target {
   background: var(--accent-wash);
   outline: 2px solid var(--accent);
@@ -923,6 +927,11 @@ button {
   position: absolute;
   inset: 46px 0 0 0;
   z-index: 10;
+}
+
+.pen-layer:not(.active) {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .pen-canvas {

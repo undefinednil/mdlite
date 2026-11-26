@@ -46,6 +46,12 @@ function createRecordingClient(responses: Record<string, unknown>) {
   return { client, calls }
 }
 
+test('an absolute asset URL is not joined to the root', () => {
+  const { client } = createRecordingClient({})
+  const api = createDesktopApi(client)
+  assert.equal(api.assetUrl(absPath('/tmp/dropped.md')), 'asset:///tmp/dropped.md')
+})
+
 test('root commands keep their names and argument keys', async () => {
   const root = { id: 'r1', name: 'Notes', path: '/vault' }
   const roots = [root]

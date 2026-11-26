@@ -42,6 +42,8 @@ pub struct AppSettings {
     pub word_wrap: bool,
     pub main_width: u32,
     pub sidebar_width: u32,
+    pub show_mode_toggle: bool,
+    pub show_pen_button: bool,
     pub shortcuts: BTreeMap<String, String>,
 }
 
@@ -65,6 +67,8 @@ impl Default for AppSettings {
             word_wrap: true,
             main_width: 100,
             sidebar_width: 296,
+            show_mode_toggle: true,
+            show_pen_button: true,
             shortcuts: BTreeMap::new(),
         }
     }
@@ -275,6 +279,9 @@ mod tests {
         assert!(settings.smart_case);
         assert!(settings.word_wrap);
         assert_eq!(settings.main_width, 100);
+        assert_eq!(settings.sidebar_width, 296);
+        assert!(settings.show_mode_toggle);
+        assert!(settings.show_pen_button);
         assert!(settings.vim_remaps.is_empty());
         assert!(settings.shortcuts.is_empty());
     }

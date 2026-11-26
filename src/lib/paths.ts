@@ -36,6 +36,12 @@ export function baseName(path: string): string {
   return idx === -1 ? path : path.slice(idx + 1)
 }
 
+/** The last segment of an OS path, where Windows may use backslashes. */
+export function fileName(path: string): string {
+  const idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  return idx === -1 ? path : path.slice(idx + 1)
+}
+
 export function extname(path: string): string {
   const name = baseName(path)
   const idx = name.lastIndexOf('.')

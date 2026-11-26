@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { isDialogOpen } from '../lib/dialogs'
+import { HTML_SCROLL_EVENT } from '../lib/htmlDocument'
 import {
   PEN_DEFAULT_COLOR,
   PEN_ERASER_RADIUS,
@@ -8,6 +10,7 @@ import {
   commitPen,
   createPenHistory,
   eraseAt,
+  penContentPoint,
   penPoint,
   penStrokes,
   redoPen,
@@ -20,6 +23,10 @@ import {
 
 interface Props {
   scrollRef: { current: HTMLDivElement | null }
+  zoom: number
+  contentScrollTop: () => number
+  contentScrollBy: (left: number, top: number) => void
+  active: boolean
   onClose: () => void
 }
 
@@ -29,11 +36,24 @@ interface PenActions {
   clear: () => void
 }
 
-export function PenOverlay({ scrollRef, onClose }: Props) {
+export function PenOverlay({
+  scrollRef,
+  zoom,
+  contentScrollTop,
+  contentScrollBy,
+  active,
+  onClose,
+}: Props) {
   const layerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const historyRef = useRef<PenHistory>(createPenHistory())
   const actionsRef = useRef<PenActions | null>(null)
+  const redrawRef = useRef<() => void>(() => {})
+  const zoomRef = useRef(zoom)
+  const contentScrollTopRef = useRef(contentScrollTop)
+  const contentScrollByRef = useRef(contentScrollBy)
+  const activeRef = useRef(active)
+  const onCloseRef = useRef(onClose)
   const toolRef = useRef<PenTool>('pen')
   const colorRef = useRef(PEN_DEFAULT_COLOR)
   const [tool, setTool] = useState<PenTool>('pen')
@@ -43,6 +63,19 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
 
   toolRef.current = tool
   colorRef.current = color
+  zoomRef.current = zoom
+  contentScrollTopRef.current = contentScrollTop
+  contentScrollByRef.current = contentScrollBy
+  activeRef.current = active
+  onCloseRef.current = onClose
+
+  useEffect(() => {
+    redrawRef.current()
+  }, [zoom])
+
+  useEffect(() => {
+    if (active) redrawRef.current()
+  }, [active])
 
   useEffect(() => {
     const layer = layerRef.current
@@ -83,9 +116,24 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
       ctx.setTransform(1, 0, 0, 1, 0, 0)
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       ctx.restore()
+      const content = scrollRef.current?.querySelector<HTMLElement>('.main-zoom')
+      if (!content) {
+        for (const stroke of strokes) drawStroke(stroke)
+        if (activeStroke) drawStroke(activeStroke)
+        return
+      }
+      const contentRect = content.getBoundingClientRect()
+      const canvasRect = canvas.getBoundingClientRect()
+      const scale = zoomRef.current > 0 ? zoomRef.current : 1
+      ctx.save()
+      ctx.translate(contentRect.left - canvasRect.left, contentRect.top - canvasRect.top)
+      ctx.scale(scale, scale)
+      ctx.translate(0, -contentScrollTopRef.current())
       for (const stroke of strokes) drawStroke(stroke)
       if (activeStroke) drawStroke(activeStroke)
+      ctx.restore()
     }
+    redrawRef.current = redraw
 
     const commit = (strokes: PenStroke[]) => {
       historyRef.current = commitPen(historyRef.current, strokes)
@@ -134,8 +182,36 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
     const observer = new ResizeObserver(resize)
     observer.observe(layer)
 
+    const content = scrollRef.current?.querySelector<HTMLElement>('.main-zoom')
+    const contentObserver = content ? new ResizeObserver(() => redraw()) : null
+    if (content && contentObserver) contentObserver.observe(content)
+
+    const body = scrollRef.current
+    let scrollFrame = 0
+    const onScroll = () => {
+      if (scrollFrame) return
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0
+        redraw()
+      })
+    }
+    body?.addEventListener('scroll', onScroll, { passive: true })
+    const scroller = scrollRef.current?.querySelector<HTMLElement>('.cm-scroller')
+    scroller?.addEventListener('scroll', onScroll, { passive: true })
+    const onHtmlScroll = () => redraw()
+    window.addEventListener(HTML_SCROLL_EVENT, onHtmlScroll)
+
     const position = (event: PointerEvent): PenPoint => {
-      return penPoint(canvas.getBoundingClientRect(), event.clientX, event.clientY)
+      const content = scrollRef.current?.querySelector<HTMLElement>('.main-zoom')
+      if (!content) return penPoint(canvas.getBoundingClientRect(), event.clientX, event.clientY)
+      const rect = content.getBoundingClientRect()
+      return penContentPoint(
+        rect,
+        zoomRef.current > 0 ? zoomRef.current : 1,
+        event.clientX,
+        event.clientY,
+        contentScrollTopRef.current(),
+      )
     }
 
     const onPointerDown = (event: PointerEvent) => {
@@ -150,7 +226,7 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
         return
       }
       activeStroke = { points: [point], color: colorRef.current, width: PEN_STROKE_WIDTH }
-      drawStroke(activeStroke)
+      redraw()
     }
 
     const onPointerMove = (event: PointerEvent) => {
@@ -170,6 +246,16 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
       stroke.points.push(point)
       const ctx = context()
       if (!ctx || !previous) return
+      const content = scrollRef.current?.querySelector<HTMLElement>('.main-zoom')
+      ctx.save()
+      if (content) {
+        const contentRect = content.getBoundingClientRect()
+        const canvasRect = canvas.getBoundingClientRect()
+        const scale = zoomRef.current > 0 ? zoomRef.current : 1
+        ctx.translate(contentRect.left - canvasRect.left, contentRect.top - canvasRect.top)
+        ctx.scale(scale, scale)
+        ctx.translate(0, -contentScrollTopRef.current())
+      }
       ctx.strokeStyle = stroke.color
       ctx.lineWidth = stroke.width
       ctx.lineCap = 'round'
@@ -178,6 +264,7 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
       ctx.moveTo(previous.x, previous.y)
       ctx.lineTo(point.x, point.y)
       ctx.stroke()
+      ctx.restore()
     }
 
     const onPointerUp = (event: PointerEvent) => {
@@ -200,14 +287,27 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey || event.metaKey) return
       const body = scrollRef.current
-      if (!body) return
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (body?.clientHeight ?? 800) : 1
       event.preventDefault()
-      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? body.clientHeight : 1
-      body.scrollLeft += event.deltaX * unit
-      body.scrollTop += event.deltaY * unit
+      contentScrollByRef.current(event.deltaX * unit, event.deltaY * unit)
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (!activeRef.current || isDialogOpen()) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (activeStroke) {
+          activeStroke = null
+          redraw()
+        }
+        if (erasing) {
+          erasing = false
+          eraseWorking = []
+          redraw()
+        }
+        onCloseRef.current()
+        return
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) return
       const target = event.target
       if (target instanceof HTMLElement && target.closest('input, textarea')) return
@@ -231,6 +331,12 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
     window.addEventListener('keydown', onKeyDown)
     return () => {
       observer.disconnect()
+      contentObserver?.disconnect()
+      if (scrollFrame) cancelAnimationFrame(scrollFrame)
+      body?.removeEventListener('scroll', onScroll)
+      scroller?.removeEventListener('scroll', onScroll)
+      window.removeEventListener(HTML_SCROLL_EVENT, onHtmlScroll)
+      redrawRef.current = () => {}
       actionsRef.current = null
       canvas.removeEventListener('pointerdown', onPointerDown)
       canvas.removeEventListener('pointermove', onPointerMove)
@@ -242,7 +348,7 @@ export function PenOverlay({ scrollRef, onClose }: Props) {
   }, [scrollRef])
 
   return (
-    <div className="pen-layer" ref={layerRef}>
+    <div className={`pen-layer ${active ? 'active' : ''}`} ref={layerRef}>
       <canvas ref={canvasRef} className="pen-canvas" aria-label="Drawing overlay" />
       <div className="pen-toolbar">
         <button

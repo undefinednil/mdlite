@@ -1,3 +1,4 @@
+import { emit } from '@tauri-apps/api/event'
 import { api } from '../api'
 import { contentHash, relPath } from './paths'
 
@@ -142,13 +143,18 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
   }
 
   const long = Array.from({ length: 240 }, (_, index) => `line ${index}`).join('\n')
+  const code = Array.from({ length: 240 }, (_, index) => `code line ${index}`).join('\n')
   await api
     .save(relPath('long.md'), long, 0, 0, contentHash(''), true)
+    .catch(() => undefined)
+  await api
+    .save(relPath('code.txt'), code, 0, 0, contentHash(''), true)
     .catch(() => undefined)
   await api
     .save(relPath('temp/keys/seed.md'), 'seed', 0, 0, contentHash(''), true)
     .catch(() => undefined)
   await waitRow('long.md', 5000).catch(() => undefined)
+  await waitRow('code.txt', 5000).catch(() => undefined)
   await waitRow('temp', 5000).catch(() => undefined)
 
   await record('app.focusTree', async () => {
@@ -352,6 +358,7 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     if (frame.getAttribute('src')) throw new Error('the preview should use srcdoc')
     if (!srcdoc.includes('<base href=')) throw new Error('the preview has no base URL')
     if (!srcdoc.includes('data-mdlite-scroll')) throw new Error('the preview has no scroll bridge')
+    if (!srcdoc.includes('mdlite-zoom')) throw new Error('the preview has no zoom')
     if (frame.title !== 'page.html') throw new Error(`unexpected iframe title ${frame.title}`)
     if (frame.getAttribute('sandbox')?.includes('allow-same-origin')) {
       throw new Error('the iframe must not be same-origin')
@@ -382,6 +389,108 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
       throw new Error(`gg did not reach the top (${frame.dataset.scrollRatio ?? 'none'})`)
     }
     return 'sandboxed srcdoc preview scrolls with j, G and gg'
+  })
+
+  await record('pen.editorZoom', async () => {
+    await openFile('code.txt')
+    const body = document.querySelector<HTMLElement>('.main-body')
+    const content = document.querySelector<HTMLElement>('.main-zoom')
+    const scroller = document.querySelector<HTMLElement>('.cm-scroller')
+    if (!body || !content || !scroller) throw new Error('editor is missing')
+    body.focus()
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitFor('.pen-layer.active')
+    const canvas = await waitFor<HTMLCanvasElement>('.pen-canvas')
+    canvas.setPointerCapture = () => {}
+    canvas.hasPointerCapture = () => false
+    canvas.releasePointerCapture = () => {}
+    scroller.scrollTop = 300
+    await wait(120)
+    const rect1 = content.getBoundingClientRect()
+    const zoom1 = parseFloat(content.style.zoom || '1')
+    const scroll1 = scroller.scrollTop
+    const canvasRect = canvas.getBoundingClientRect()
+    const startX = rect1.left + 200
+    const startY = canvasRect.top + 200
+    const endX = startX + 80
+    const endY = startY
+    const pointer = (type: string, x: number, y: number) => {
+      canvas.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          pointerType: 'mouse',
+          button: 0,
+          buttons: type === 'pointerup' ? 0 : 1,
+          clientX: x,
+          clientY: y,
+        }),
+      )
+    }
+    pointer('pointerdown', startX, startY)
+    pointer('pointermove', endX, endY)
+    pointer('pointerup', endX, endY)
+    await wait(120)
+    const pixel = (x: number, y: number) => {
+      const ctx = canvas.getContext('2d')
+      const dpr = window.devicePixelRatio || 1
+      const px = Math.round((x - canvasRect.left) * dpr)
+      const py = Math.round((y - canvasRect.top) * dpr)
+      if (!ctx) return -1
+      let max = 0
+      for (let dx = -2; dx <= 2; dx += 1) {
+        for (let dy = -2; dy <= 2; dy += 1) {
+          const data = ctx.getImageData(px + dx, py + dy, 1, 1).data
+          max = Math.max(max, data[3])
+        }
+      }
+      return max
+    }
+    const beforeAlpha = pixel(endX, endY)
+    press(body, '-', { ctrlKey: true })
+    await wait(150)
+    press(body, '-', { ctrlKey: true })
+    await wait(400)
+    const rect2 = content.getBoundingClientRect()
+    const zoom2 = parseFloat(content.style.zoom || '1')
+    const scroll2 = scroller.scrollTop
+    const cx = (endX - rect1.left) / zoom1
+    const cy = (endY - rect1.top) / zoom1 + scroll1
+    const expectedX = rect2.left + cx * zoom2
+    const expectedY = rect2.top + (cy - scroll2) * zoom2
+    const expectedAlpha = pixel(expectedX, expectedY)
+    const oldAlpha = pixel(endX, endY)
+    press(body, '0', { ctrlKey: true })
+    await wait(200)
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitGone('.pen-layer.active')
+    return `editor zoom ${zoom1}->${zoom2}; scroll ${scroll1}->${scroll2}; stroke ${beforeAlpha}; expected ${expectedX.toFixed(1)},${expectedY.toFixed(1)} alpha ${expectedAlpha}; old ${oldAlpha}`
+  })
+
+  await record('pen.followScroll', async () => {
+    await openFile('long.md')
+    const body = document.querySelector<HTMLElement>('.main-body')
+    if (!body) throw new Error('main body is missing')
+    body.focus()
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitFor('.pen-layer.active')
+    const canvas = await waitFor<HTMLCanvasElement>('.pen-canvas')
+    body.scrollTop = 120
+    await wait(150)
+    if (!canvas.width || !canvas.height) throw new Error('pen canvas was not sized')
+    press(body, 'Escape')
+    await waitGone('.pen-layer.active')
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitFor('.pen-layer.active')
+    const reopened = await waitFor<HTMLCanvasElement>('.pen-canvas')
+    if (reopened !== canvas) throw new Error('pen remounted and lost the drawing')
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitGone('.pen-layer.active')
+    await openFile('note.md')
+    const changed = document.querySelector<HTMLCanvasElement>('.pen-canvas')
+    if (changed === canvas) throw new Error('pen history survived a file change')
+    return 'pen persisted across toggles, closed with Escape and reset on file change'
   })
 
   await record('editor.halfPageDown', async () => {
@@ -556,35 +665,62 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     return 'filtered tree folded'
   })
 
+  await record('asset.text', async () => {
+    const response = await fetch(api.rawUrl(relPath('note.md')))
+    if (!response.ok) throw new Error(`asset read failed: ${response.status}`)
+    const text = await response.text()
+    if (!text.includes('e2e note')) throw new Error('asset read returned the wrong file')
+    return 'asset protocol read a dropped-file path'
+  })
+
   await record('tree.dragMove', async () => {
     const source = treeRow('note.md')
     const target = treeRow('temp')
-    if (!source || !target) throw new Error('drag rows are missing')
-    const drag = (from: HTMLElement, to: HTMLElement) => {
-      const data = new DataTransfer()
-      from.dispatchEvent(
-        new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }),
-      )
-      to.dispatchEvent(
-        new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }),
-      )
-      to.dispatchEvent(
-        new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }),
-      )
-      from.dispatchEvent(
-        new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: data }),
+    const tree = document.querySelector<HTMLElement>('.tree-scroll')
+    if (!source || !target || !tree) throw new Error('drag rows are missing')
+    for (const element of [source, target, tree]) {
+      element.setPointerCapture = () => {}
+      element.releasePointerCapture = () => {}
+      element.hasPointerCapture = () => false
+    }
+    const pointer = (target: HTMLElement, type: string, x: number, y: number, buttons: number) => {
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          pointerId: 1,
+          pointerType: 'mouse',
+          isPrimary: true,
+          button: 0,
+          buttons,
+          clientX: x,
+          clientY: y,
+        }),
       )
     }
-    drag(source, target)
-    await wait(600)
+    const drag = async (from: HTMLElement, to: HTMLElement, endY: number) => {
+      const fromRect = from.getBoundingClientRect()
+      const toRect = to.getBoundingClientRect()
+      const startX = fromRect.left + 24
+      const startY = fromRect.top + fromRect.height / 2
+      pointer(from, 'pointerdown', startX, startY, 1)
+      pointer(from, 'pointermove', startX + 8, startY + 8, 1)
+      await wait(60)
+      const endX = toRect.left + 24
+      pointer(from, 'pointermove', endX, endY, 1)
+      await wait(80)
+      pointer(from, 'pointerup', endX, endY, 0)
+      await wait(600)
+    }
+    const targetRect = target.getBoundingClientRect()
+    await drag(source, target, targetRect.top + targetRect.height / 2)
     const moved = treeRow('note.md')
     if (moved?.title !== 'temp/note.md') {
       throw new Error(`drag move left ${moved?.title ?? 'nothing'}`)
     }
-    const tree = document.querySelector<HTMLElement>('.tree-scroll')
-    if (!tree) throw new Error('tree is missing')
-    drag(moved, tree)
-    await wait(600)
+    const treeRect = tree.getBoundingClientRect()
+    await drag(moved, tree, treeRect.bottom - 12)
     const back = treeRow('note.md')
     if (back?.title !== 'note.md') {
       throw new Error(`drag back left ${back?.title ?? 'nothing'}`)
@@ -689,6 +825,35 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     return 'move dialog opened'
   })
 
+  await record('zoom.center', async () => {
+    await openFile('long.md')
+    await waitFor('.markdown')
+    const area = document.querySelector<HTMLElement>('.main-body')
+    if (!area) throw new Error('main area is missing')
+    area.scrollTop = Math.max(0, area.scrollHeight / 2)
+    await wait(80)
+    const center = () => ({
+      x: (area.scrollLeft + area.clientWidth / 2) / Math.max(1, area.scrollWidth),
+      y: (area.scrollTop + area.clientHeight / 2) / Math.max(1, area.scrollHeight),
+    })
+    const before = center()
+    press(area, '=', { ctrlKey: true })
+    await wait(250)
+    const zoomed = center()
+    if (Math.abs(zoomed.x - before.x) > 0.03 || Math.abs(zoomed.y - before.y) > 0.03) {
+      throw new Error(`zoom moved the centre: ${JSON.stringify({ before, zoomed })}`)
+    }
+    press(area, '-', { ctrlKey: true })
+    await wait(250)
+    const back = center()
+    if (Math.abs(back.x - before.x) > 0.03 || Math.abs(back.y - before.y) > 0.03) {
+      throw new Error(`zoom out moved the centre: ${JSON.stringify({ before, back })}`)
+    }
+    press(area, '0', { ctrlKey: true })
+    await wait(250)
+    return 'zoom kept the main-area centre'
+  })
+
   await record('Ctrl+Tab', async () => {
     await openFile('note.md')
     await openFile('long.md')
@@ -723,6 +888,33 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     rows[0]?.click()
     await waitGone('.cycle')
     return 'recent files opened from the button'
+  })
+
+  await record('recent.keys', async () => {
+    await openFile('note.md')
+    await openFile('long.md')
+    const button = document.querySelector<HTMLButtonElement>(
+      '.sidebar-actions button[title="Recent files"]',
+    )
+    if (!button) throw new Error('recent files button is missing')
+    button.click()
+    await waitFor('.cycle')
+    const rows = document.querySelectorAll<HTMLButtonElement>('.cycle-item')
+    if (rows.length < 2) throw new Error('recent files are missing')
+    const activeIndex = () =>
+      [...document.querySelectorAll<HTMLElement>('.cycle-item')].findIndex((row) =>
+        row.classList.contains('active'),
+      )
+    if (activeIndex() !== 0) throw new Error('the recent-file menu did not start on the first row')
+    press(document.body, 'n', { ctrlKey: true })
+    await wait(80)
+    if (activeIndex() !== 1) throw new Error('Ctrl+N did not move the recent-file highlight down')
+    press(document.body, 'p', { ctrlKey: true })
+    await wait(80)
+    if (activeIndex() !== 0) throw new Error('Ctrl+P did not move the recent-file highlight up')
+    press(document.body, 'Escape')
+    await waitGone('.cycle')
+    return 'Ctrl+N and Ctrl+P step the recent-file menu'
   })
 
   await record('Escape', async () => {
@@ -792,6 +984,56 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     return 'sidebar width applied and persisted'
   })
 
+  await record('settings.viewButtons', async () => {
+    const gear = () => document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Settings"]')
+    const openEditor = async () => {
+      const button = gear()
+      if (!button) throw new Error('settings button is missing')
+      button.click()
+      const settings = await waitFor<HTMLElement>('.settings')
+      const editor = [...settings.querySelectorAll<HTMLButtonElement>('.settings-nav-item')].find(
+        (entry) => entry.textContent?.includes('Editor'),
+      )
+      if (!editor) throw new Error('editor settings tab is missing')
+      editor.click()
+      await waitFor('input[aria-label="View/edit button"]')
+      return settings
+    }
+    let settings = await openEditor()
+    const mode = document.querySelector<HTMLInputElement>('input[aria-label="View/edit button"]')
+    const paint = document.querySelector<HTMLInputElement>('input[aria-label="Paint button"]')
+    if (!mode || !paint) throw new Error('view control switches are missing')
+    mode.click()
+    paint.click()
+    await wait(1200)
+    press(settings, 'w', { ctrlKey: true })
+    await waitGone('.settings')
+
+    await openFile('long.md')
+    if (document.querySelector('.floating-pen') || document.querySelector('.floating-toggle')) {
+      throw new Error('floating buttons are still visible')
+    }
+    const body = document.querySelector<HTMLElement>('.main-body')
+    if (!body) throw new Error('main body is missing')
+    body.focus()
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitFor('.pen-layer.active')
+    press(body, 'W', { ctrlKey: true, shiftKey: true })
+    await waitGone('.pen-layer.active')
+
+    settings = await openEditor()
+    const modeAgain = document.querySelector<HTMLInputElement>('input[aria-label="View/edit button"]')
+    const paintAgain = document.querySelector<HTMLInputElement>('input[aria-label="Paint button"]')
+    if (!modeAgain || !paintAgain) throw new Error('view control switches are missing')
+    if (modeAgain.checked || paintAgain.checked) throw new Error('buttons were not hidden')
+    modeAgain.click()
+    paintAgain.click()
+    await wait(1200)
+    press(settings, 'w', { ctrlKey: true })
+    await waitGone('.settings')
+    return 'view and paint buttons hidden and restored'
+  })
+
   await record('trash.close', async () => {
     const button = document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Trash"]')
     if (!button) throw new Error('trash button is missing')
@@ -800,6 +1042,19 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     press(trash, 'w', { ctrlKey: true })
     await waitGone('.trash-view')
     return 'Trash closed with Ctrl+W'
+  })
+
+  await record('drop.native', async () => {
+    await openFile('note.md')
+    const absolute = api.absolutePath(relPath('note.md'))
+    await emit('tauri://drag-drop', { paths: [absolute], position: { x: 0, y: 0 } })
+    for (let index = 0; index < 60; index += 1) {
+      if (document.querySelector('.scratch-badge')) {
+        return 'native drop opened an absolute path as a temporary file'
+      }
+      await wait(50)
+    }
+    throw new Error('native drop did not open the file')
   })
 
   return checks

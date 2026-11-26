@@ -18,5 +18,7 @@ export const defaultAppSettings: AppSettings = {
   wordWrap: true,
   mainWidth: 100,
   sidebarWidth: 296,
+  showModeToggle: true,
+  showPenButton: true,
   shortcuts: {},
 }

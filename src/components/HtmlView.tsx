@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
-import { htmlBaseUrl, htmlDocument, keyEventInit, shouldForwardKey, type HtmlKeyMessage } from '../lib/htmlDocument'
+import { HTML_SCROLL_EVENT, htmlBaseUrl, htmlDocument, keyEventInit, shouldForwardKey, type HtmlKeyMessage } from '../lib/htmlDocument'
 import { baseName } from '../lib/paths'
 import type { RelPath } from '../../shared/types'
 
@@ -16,6 +16,7 @@ export interface HtmlViewHandle {
   scrollToTop: () => void
   scrollToBottom: () => void
   scrollRatio: () => number
+  scrollTop: () => number
 }
 
 // The sandbox deliberately omits allow-same-origin: the page gets an opaque
@@ -28,6 +29,7 @@ export const HtmlView = forwardRef<HtmlViewHandle, Props>(function HtmlView(
 ) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const ratioRef = useRef(initialScrollRatio)
+  const scrollTopRef = useRef(0)
   const [loaded, setLoaded] = useState(false)
   const url = api.htmlUrl(path)
   const srcDoc = useMemo(() => htmlDocument(content, htmlBaseUrl(url)), [content, url])
@@ -41,13 +43,14 @@ export const HtmlView = forwardRef<HtmlViewHandle, Props>(function HtmlView(
     scrollToTop: () => post({ type: 'top' }),
     scrollToBottom: () => post({ type: 'bottom' }),
     scrollRatio: () => ratioRef.current,
+    scrollTop: () => scrollTopRef.current,
   }), [])
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return
       const data = event.data as
-        | (HtmlKeyMessage & { source?: string; type?: string; ratio?: unknown })
+        | (HtmlKeyMessage & { source?: string; type?: string; ratio?: unknown; top?: unknown })
         | null
       if (!data || data.source !== 'mdlite-html') return
       if (data.type === 'scroll') {
@@ -55,6 +58,10 @@ export const HtmlView = forwardRef<HtmlViewHandle, Props>(function HtmlView(
           ratioRef.current = data.ratio
           if (frameRef.current) frameRef.current.dataset.scrollRatio = data.ratio.toFixed(4)
         }
+        if (typeof data.top === 'number' && Number.isFinite(data.top)) {
+          scrollTopRef.current = data.top
+        }
+        window.dispatchEvent(new Event(HTML_SCROLL_EVENT))
         return
       }
       if (data.type !== 'key') return
@@ -80,6 +87,7 @@ export const HtmlView = forwardRef<HtmlViewHandle, Props>(function HtmlView(
         onLoad={() => {
           setLoaded(true)
           ratioRef.current = initialScrollRatio
+          scrollTopRef.current = 0
           post({ type: 'restore', ratio: initialScrollRatio })
           frameRef.current?.focus()
         }}

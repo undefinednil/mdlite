@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { fileType, formatKind, iconFor, iconTone } from './fileType'
+import { fileType, formatKind, iconFor, iconTone, isMediaPath } from './fileType'
 
 const MARKDOWN = ['md', 'markdown', 'mdx']
 const DIAGRAM = ['excalidraw', 'svg']
@@ -159,6 +159,18 @@ test('unknown extensions are binary and not droppable', () => {
   assert.equal(type.icon, 'draft')
   assert.equal(type.iconTone, 'tone-default')
   assert.equal(formatKind('archive.xyz'), 'XYZ')
+})
+
+test('media paths match the upload command', () => {
+  for (const extension of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'mp4', 'webm', 'mov', 'm4v', 'ogv']) {
+    assert.equal(isMediaPath(path(extension)), true, extension)
+  }
+  for (const extension of ['md', 'txt', 'pdf', 'zip', 'xyz']) {
+    assert.equal(isMediaPath(path(extension)), false, extension)
+  }
+  assert.equal(isMediaPath('NOTES'), false)
+  assert.equal(isMediaPath('C:\\tmp\\photo.png'), true)
+  assert.equal(isMediaPath('C:\\tmp\\README'), false)
 })
 
 test('drop predicate accepts every text extension the editor opens', () => {
