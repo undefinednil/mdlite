@@ -96,20 +96,13 @@ export interface GrepOptions {
 }
 
 export interface RootsResult {
-  root: RootEntry
   roots: RootEntry[]
+  active: string[]
 }
 
-export interface RemoveRootResult {
-  roots: RootEntry[]
-  active: string
-}
-
-export interface Api {
-  info(): Promise<InfoResponse>
-  addRoot(path: AbsPath, name?: string): Promise<RootsResult>
-  setRoot(id: string): Promise<RootsResult>
-  removeRoot(id: string): Promise<RemoveRootResult>
+export interface RootApi {
+  rootId: string
+  rootPath: AbsPath
   tree(): Promise<{ nodes: TreeNode[] }>
   read(path: RelPath): Promise<FileDoc>
   save(
@@ -120,14 +113,11 @@ export interface Api {
     hash: string,
     force?: boolean,
   ): Promise<SaveResult>
-  saveText(path: AbsPath, content: string): Promise<void>
   absolutePath(path: RelPath): AbsPath
   open(path: RelPath): Promise<void>
   reveal(path: RelPath): Promise<void>
-  openUrl(url: string): Promise<void>
   grep(query: string, opts?: GrepOptions): Promise<GrepResponse>
   rawUrl(path: RelPath): string
-  assetUrl(path: AbsPath): string
   htmlUrl(path: RelPath): string
   upload(dir: RelPath, file: File): Promise<{ path: RelPath }>
   create(path: RelPath, type: 'file' | 'dir'): Promise<{ path: RelPath }>
@@ -137,9 +127,20 @@ export interface Api {
   trashList(): Promise<TrashEntry[]>
   purgeTrash(path: RelPath): Promise<void>
   restore(from: RelPath, to: RelPath): Promise<{ path: RelPath }>
+}
+
+export interface Api {
+  info(): Promise<InfoResponse>
+  addRoot(path: AbsPath, name?: string): Promise<RootsResult>
+  setRootActive(id: string, active: boolean): Promise<RootsResult>
+  removeRoot(id: string): Promise<RootsResult>
+  forRoot(rootId: string): RootApi
+  saveText(path: AbsPath, content: string): Promise<void>
+  openUrl(url: string): Promise<void>
+  assetUrl(path: AbsPath): string
   settings(): Promise<SettingsResponse>
   saveSettings(settings: AppSettings): Promise<SettingsResponse>
-  subscribeChanges(handler: (paths: RelPath[]) => void): () => void
+  subscribeChanges(handler: (change: { rootId: string; paths: RelPath[] }) => void): () => void
 }
 
 function brandTreeNodes(nodes: TreeNode[]): TreeNode[] {
@@ -184,7 +185,7 @@ async function toBase64(file: File): Promise<string> {
 }
 
 export function createDesktopApi(client: ApiClient = tauriClient): Api {
-  let rootPath = absPath('')
+  let rootPaths = new Map<string, AbsPath>()
 
   const call = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
     try {
@@ -194,100 +195,94 @@ export function createDesktopApi(client: ApiClient = tauriClient): Api {
     }
   }
 
-  const absolutePath = (path: RelPath): AbsPath => absolutePathFrom(rootPath, path)
+  const adopt = (result: RootsResult): RootsResult => {
+    rootPaths = new Map(result.roots.map((root) => [root.id, absPath(root.path)]))
+    return { roots: result.roots.map(brandRoot), active: [...result.active] }
+  }
 
   const fetchInfo = async (): Promise<InfoResponse> => {
     const data = await call<InfoResponse>('info')
-    rootPath = absPath(data.root)
-    return { ...data, root: rootPath, roots: data.roots.map(brandRoot) }
+    const adopted = adopt(data)
+    return { roots: adopted.roots, active: adopted.active }
+  }
+
+  const forRoot = (rootId: string): RootApi => {
+    const rootPath = rootPaths.get(rootId) ?? absPath('')
+    const absolutePath = (path: RelPath): AbsPath => absolutePathFrom(rootPath, path)
+    return {
+      rootId,
+      rootPath,
+      tree: async () => ({
+        nodes: brandTreeNodes(await call<TreeNode[]>('tree', { rootId })),
+      }),
+      read: (path: RelPath) =>
+        call<FileDoc>('read_file', { rootId, path }).then(brandDoc),
+      save: (path, content, mtime, size, hash, force = false) =>
+        call<SaveResult>('write_file', { rootId, path, content, mtime, size, hash, force }).then(
+          brandSave,
+        ),
+      absolutePath,
+      open: (path: RelPath) => call<void>('open_path', { path: absolutePath(path) }),
+      reveal: (path: RelPath) => call<void>('reveal_path', { rootId, path }),
+      grep: (query: string, opts: GrepOptions = {}) =>
+        call<GrepResponse>('search_grep', {
+          rootId,
+          query,
+          regex: Boolean(opts.regex),
+          caseSensitive: Boolean(opts.caseSensitive),
+        }).then(brandGrep),
+      rawUrl: (path: RelPath) => client.assetUrl(absolutePath(path)),
+      htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
+      upload: async (dir: RelPath, file: File) => {
+        const data = await toBase64(file)
+        const saved = await call<string>('upload', { rootId, dir, name: file.name, data })
+        return { path: relPath(saved) }
+      },
+      create: (path: RelPath, type: 'file' | 'dir') =>
+        call<string>('create_entry', { rootId, path, kind: type }).then((created) => ({
+          path: relPath(created),
+        })),
+      rename: (path: RelPath, name: string) =>
+        call<string>('rename_entry', { rootId, path, name }).then((next) => ({
+          path: relPath(next),
+        })),
+      transfer: (from: RelPath, to: RelPath, copy: boolean) =>
+        call<string>('transfer_entry', { rootId, from, to, copy }).then((next) => ({
+          path: relPath(next),
+        })),
+      trash: (path: RelPath) =>
+        call<string>('trash_entry', { rootId, path }).then((next) => ({ path: relPath(next) })),
+      trashList: () =>
+        call<TrashEntry[]>('trash_list', { rootId }).then((entries) =>
+          entries.map(brandTrashEntry),
+        ),
+      purgeTrash: (path: RelPath) => call<void>('trash_purge', { rootId, path }),
+      restore: (from: RelPath, to: RelPath) =>
+        call<string>('restore_entry', { rootId, from, to }).then((next) => ({
+          path: relPath(next),
+        })),
+    }
   }
 
   return {
     info: fetchInfo,
 
-    addRoot: async (path: AbsPath, name?: string) => {
-      const root = brandRoot(await call<RootEntry>('root_add', { path, name: name ?? null }))
-      const info = await fetchInfo()
-      return { root, roots: info.roots }
-    },
+    addRoot: async (path: AbsPath, name?: string) =>
+      adopt(await call<RootsResult>('root_add', { path, name: name ?? null })),
 
-    setRoot: async (id: string) => {
-      const root = brandRoot(await call<RootEntry>('root_set', { id }))
-      const info = await fetchInfo()
-      return { root, roots: info.roots }
-    },
+    setRootActive: async (id: string, active: boolean) =>
+      adopt(await call<RootsResult>('root_set_active', { id, active })),
 
-    removeRoot: async (id: string) => {
-      await call<RootEntry[]>('root_remove', { id })
-      const info = await fetchInfo()
-      return { roots: info.roots, active: info.id }
-    },
+    removeRoot: async (id: string) => adopt(await call<RootsResult>('root_remove', { id })),
 
-    tree: async () => ({ nodes: brandTreeNodes(await call<TreeNode[]>('tree')) }),
-
-    read: (path: RelPath) => call<FileDoc>('read_file', { path }).then(brandDoc),
-
-    save: (
-      path: RelPath,
-      content: string,
-      mtime: number,
-      size: number,
-      hash: string,
-      force = false,
-    ) => call<SaveResult>('write_file', { path, content, mtime, size, hash, force }).then(brandSave),
+    forRoot,
 
     saveText: (path: AbsPath, content: string) =>
       call<void>('save_text_file', { path, content }),
 
-    absolutePath,
-
-    open: (path: RelPath) => call<void>('open_path', { path: absolutePath(path) }),
-
-    reveal: (path: RelPath) => call<void>('reveal_path', { path }),
-
     openUrl: (url: string) => call<void>('open_url', { url }),
 
-    grep: (query: string, opts: GrepOptions = {}) =>
-      call<GrepResponse>('search_grep', {
-        query,
-        regex: Boolean(opts.regex),
-        caseSensitive: Boolean(opts.caseSensitive),
-      }).then(brandGrep),
-
-    rawUrl: (path: RelPath) => client.assetUrl(absolutePath(path)),
-
     assetUrl: (path: AbsPath) => client.assetUrl(path),
-
-    htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
-
-    upload: async (dir: RelPath, file: File) => {
-      const data = await toBase64(file)
-      const saved = await call<string>('upload', { dir, name: file.name, data })
-      return { path: relPath(saved) }
-    },
-
-    create: (path: RelPath, type: 'file' | 'dir') =>
-      call<string>('create_entry', { path, kind: type }).then((created) => ({
-        path: relPath(created),
-      })),
-
-    rename: (path: RelPath, name: string) =>
-      call<string>('rename_entry', { path, name }).then((next) => ({ path: relPath(next) })),
-
-    transfer: (from: RelPath, to: RelPath, copy: boolean) =>
-      call<string>('transfer_entry', { from, to, copy }).then((next) => ({
-        path: relPath(next),
-      })),
-
-    trash: (path: RelPath) =>
-      call<string>('trash_entry', { path }).then((next) => ({ path: relPath(next) })),
-
-    trashList: () => call<TrashEntry[]>('trash_list').then((entries) => entries.map(brandTrashEntry)),
-
-    purgeTrash: (path: RelPath) => call<void>('trash_purge', { path }),
-
-    restore: (from: RelPath, to: RelPath) =>
-      call<string>('restore_entry', { from, to }).then((next) => ({ path: relPath(next) })),
 
     settings: () =>
       call<SettingsResponse>('settings_get').then((data) => ({
@@ -301,12 +296,14 @@ export function createDesktopApi(client: ApiClient = tauriClient): Api {
         path: absPath(data.path),
       })),
 
-    subscribeChanges(handler: (paths: RelPath[]) => void): () => void {
+    subscribeChanges(handler: (change: { rootId: string; paths: RelPath[] }) => void): () => void {
       let unlisten: (() => void) | null = null
       let cancelled = false
       void client
-        .listen<{ paths: string[] }>('fs-change', (event) => {
-          if (event.payload?.paths?.length) handler(event.payload.paths.map(relPath))
+        .listen<{ rootId: string; paths: string[] }>('fs-change', (event) => {
+          const rootId = event.payload?.rootId
+          const paths = event.payload?.paths
+          if (rootId && paths?.length) handler({ rootId, paths: paths.map(relPath) })
         })
         .then((fn) => {
           if (cancelled) fn()

@@ -49,6 +49,7 @@ test('opens a text document into the snapshot and leaves it clean', async () => 
   assert.equal(state.status, 'ready')
   assert.equal(state.draft, '# hi')
   assert.deepEqual(state.document, {
+    rootId: '',
     path: 'notes/a.md',
     content: '# hi',
     mtime: state.document?.mtime,
@@ -72,6 +73,7 @@ test('opens an image through the lookup metadata without reading it as text', as
 
   assert.equal(state.status, 'ready')
   assert.deepEqual(state.document, {
+    rootId: '',
     path: 'pics/cat.png',
     content: '',
     mtime: 120,
@@ -98,6 +100,7 @@ test('opens a binary response as the same document shape with lookup metadata', 
 
   assert.equal(state.status, 'ready')
   assert.deepEqual(state.document, {
+    rootId: '',
     path: 'notes/blob.md',
     content: '',
     mtime: 55,

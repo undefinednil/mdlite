@@ -79,14 +79,15 @@ Read `docs/mdlite-frontend-styling/SKILL.md` before any UI change. It is the sty
 
 ## Rust core
 
-- Command handlers in `lib.rs` stay thin: validate input, take the root, call a module, return. Filesystem logic belongs in `files.rs`, `tree.rs`, `search.rs`, `watch.rs`, `paths.rs`, `settings.rs` or `state.rs`.
+- Command handlers in `lib.rs` stay thin: validate input, take the root id, call a module, return. Filesystem logic belongs in `files.rs`, `tree.rs`, `search.rs`, `watch.rs`, `paths.rs`, `settings.rs` or `state.rs`.
 - Commands return `ApiResult<T>`. Use `ApiError::bad_request`, `forbidden`, `not_found`, `conflict` and `io`; add a new `kind` only when the UI must branch on it. `kind` is the stable contract, `message` is display text.
 - Mark a command `#[tauri::command(async)]` when it touches the filesystem or runs a process: tree, reads and writes, search, upload, file operations. Config-only commands stay sync. `save_text_file` is the existing exception because it writes an export target chosen in a native dialog.
 - Every response struct uses `#[serde(rename_all = "camelCase")]` when a field has more than one word. Update `shared/types.ts` in the same change.
-- Commands that work inside a root take a root-relative path and resolve it with `paths::safe_join`. Never join user input to the root by hand. A leading slash means the root, on purpose.
+- Commands that work inside a root take a `rootId` and a root-relative path, look up that root, and resolve the path with `paths::safe_join`. Never join user input to the root by hand. A leading slash means the root, on purpose. Never rely on an ambient active root: the open document and every root row carry their own root id.
 - Only three places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target) and `open_path` (hand a file to the OS). Do not add a fourth.
 - Config writes stay atomic: temp file, `sync_all`, rename, owner-only permissions on Unix (`Config::persist`). Never write `mdlite.json` in place.
-- Old config files must keep loading. Every settings field has a serde default, missing fields fall back to `AppSettings::default()`, and a config must never be rejected just because it predates a newer key. Extend the legacy config tests (`reads_legacy_config_shape` and `reads_settings_with_missing_fields`) when the config shape changes.
+- Old config files must keep loading. Every settings field has a serde default, missing fields fall back to `AppSettings::default()`, and a config must never be rejected just because it predates a newer key. The config `active` field is an array of root ids; an old single string is read as a one-root active set, and a missing field activates every configured root. Extend the legacy config tests (`reads_legacy_config_shape`, `reads_settings_with_missing_fields` and `reads_multiple_active_roots_and_defaults_missing_active_to_all`) when the config shape changes.
+- The config may have zero roots and zero active roots. Both are valid UI states; do not assume `roots[0]` or one active root in Rust or the frontend.
 - Keep the existing caps and debounce unless the change is about them: 8 MiB file read, 4,000,000-byte temporary drop, 1 MiB conflict preview, 60 MB upload, 20,000 tree entries, 120 files / 6 matches per file / 400 total for search, 2 MB fallback search file, 200 Vim remaps, 250 ms watcher debounce.
 - Rename-like operations must use `assert_name`: no empty name, `.` or `..`, no slash or backslash, no leading dot, at most 200 bytes. `create_entry` is the exception: it takes a root-relative path and creates missing parent folders, so nested creation works.
 - A new file operation must stay inside the root, including through symlinks, and must handle a missing parent the same way its neighbours do.
@@ -105,7 +106,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `npm test` runs every file matching the `src/**/*.test.ts` glob in the `test` script. A new test file runs without editing the script.
 - Rust tests are `#[cfg(test)] mod tests` inside the module they cover and use a fresh temp directory per test. Add one for a new path rule, file operation or config rule.
 - Run the packaged self-test after changing Tauri commands, the asset protocol, the dialogs or the first screen. Build with `VITE_MDLITE_SELFTEST=1 npx tauri build --bundles app`, run it with `MDLITE_CONFIG` and `MDLITE_ROOT` pointing at a throwaway folder, check `temp/__selftest.json`, then quit and delete the folder. Never point it at a real vault. `npm run e2e` automates that loop and fails when a keyboard-shortcut check fails.
-- Run `npm run e2e` when a shortcut, overlay, page lifecycle, pen or first-screen interaction changes. It covers the shortcut catalogue, recent files, drag-move, page close, sidebar width, view-button toggles, pen persistence and zoom, `Ctrl+U` and Escape.
+- Run `npm run e2e` when a shortcut, overlay, page lifecycle, root folder, pen or first-screen interaction changes. It covers the shortcut catalogue, two active roots as normal root rows with per-root file creation, root visibility toggles, recent files, drag-move, page close, sidebar width, view-button toggles, pen persistence and zoom, `Ctrl+U` and Escape.
 - For a UI lifecycle, assert what proves it: the same element across a toggle, a new element after a file change, or the layer active/inactive.
 - For canvas or pen transforms, add a pixel check with a synthetic pointer stroke and patch pointer capture in the test. Cover the editor and iframe scrollers, not only Markdown.
 - If a packaged check is flaky and unrelated, report it separately; do not delete or weaken it.
@@ -153,7 +154,8 @@ Each of these covers a bug this app has already had. Check them before reporting
 ## Review checklist
 
 - Is disk access behind a Rust command and a `src/api.ts` wrapper?
-- Is every path root-relative and resolved through `safe_join`? The one exception is an OS-dropped file: read it through `api.assetUrl` and the existing `File` path, not a new absolute-path command.
+- Is every path root-relative and resolved through `safe_join` under an explicit root id? The one exception is an OS-dropped file: read it through `api.assetUrl` and the existing `File` path, not a new absolute-path command.
+- Does every root row and open document carry its root id, and does the UI handle zero roots and zero active roots?
 - Do the Rust payloads and `shared/types.ts` still match?
 - Does a new error give the UI a `kind` it can branch on?
 - Is new CSS in `src/styles.css`, using `:root` tokens, with state in its own class?

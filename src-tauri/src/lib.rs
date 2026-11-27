@@ -22,10 +22,15 @@ use crate::tree::TreeNode;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InfoResponse {
-    root: String,
-    name: String,
-    id: String,
     roots: Vec<RootEntry>,
+    active: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RootsResponse {
+    roots: Vec<RootEntry>,
+    active: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -35,64 +40,84 @@ struct SettingsResponse {
     path: String,
 }
 
-fn root_of(state: &State<'_, AppState>) -> ApiResult<PathBuf> {
+fn root_of(state: &State<'_, AppState>, id: &str) -> ApiResult<PathBuf> {
     state
-        .root_path()
-        .ok_or_else(|| ApiError::bad_request("no folder is open"))
+        .root_path(id)
+        .ok_or_else(|| ApiError::not_found("unknown root"))
+}
+
+fn sync_watchers(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let active = state.active_roots();
+    let Ok(mut watchers) = state.watchers.lock() else {
+        return;
+    };
+    watchers.retain(|id, _| active.iter().any(|(root_id, _)| root_id == id));
+    for (id, path) in active {
+        if watchers.contains_key(&id) {
+            continue;
+        }
+        if let Some(watcher) = watch::start(app.clone(), id.clone(), path) {
+            watchers.insert(id, watcher);
+        }
+    }
 }
 
 #[tauri::command]
 fn info(state: State<'_, AppState>) -> ApiResult<InfoResponse> {
     let config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    let active = config.active();
     Ok(InfoResponse {
-        root: active.map(|root| root.path.clone()).unwrap_or_default(),
-        name: active.map(|root| root.name.clone()).unwrap_or_default(),
-        id: active.map(|root| root.id.clone()).unwrap_or_default(),
         roots: config.list(),
+        active: config.active_ids(),
     })
 }
 
 #[tauri::command]
-fn root_add(state: State<'_, AppState>, path: String, name: Option<String>) -> ApiResult<RootEntry> {
-    let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    config.add(&path, name)
-}
-
-#[tauri::command]
-fn root_set(app: AppHandle, state: State<'_, AppState>, id: String) -> ApiResult<RootEntry> {
-    let (root, root_path) = {
+fn root_add(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> ApiResult<RootsResponse> {
+    let (roots, active) = {
         let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
-        let root = config.set_active(&id)?;
-        let path = PathBuf::from(&root.path);
-        (root, path)
+        config.add(&path, name)?;
+        (config.list(), config.active_ids())
     };
-
-    let mut watcher_slot = state.watcher.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    *watcher_slot = watch::start(app.clone(), root_path);
-
-    Ok(root)
+    sync_watchers(&app);
+    Ok(RootsResponse { roots, active })
 }
 
 #[tauri::command]
-fn root_remove(
+fn root_set_active(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
-) -> ApiResult<Vec<RootEntry>> {
-    let (roots, root_path) = {
+    active: bool,
+) -> ApiResult<RootsResponse> {
+    let (roots, ids) = {
+        let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
+        config.set_active(&id, active)?;
+        (config.list(), config.active_ids())
+    };
+    sync_watchers(&app);
+    Ok(RootsResponse { roots, active: ids })
+}
+
+#[tauri::command]
+fn root_remove(app: AppHandle, state: State<'_, AppState>, id: String) -> ApiResult<RootsResponse> {
+    let (roots, active) = {
         let mut config = state.config.lock().map_err(|_| ApiError::new("state", "lock"))?;
         config.remove(&id)?;
-        (config.list(), config.active_path())
+        (config.list(), config.active_ids())
     };
-    let mut watcher_slot = state.watcher.lock().map_err(|_| ApiError::new("state", "lock"))?;
-    *watcher_slot = root_path.and_then(|path| watch::start(app, path));
-    Ok(roots)
+    sync_watchers(&app);
+    Ok(RootsResponse { roots, active })
 }
 
 #[tauri::command(async)]
-fn tree(state: State<'_, AppState>) -> ApiResult<Vec<TreeNode>> {
-    let root = root_of(&state)?;
+fn tree(state: State<'_, AppState>, root_id: String) -> ApiResult<Vec<TreeNode>> {
+    let root = root_of(&state, &root_id)?;
     if !root.is_dir() {
         return Err(ApiError::bad_request("root folder is not available"));
     }
@@ -100,13 +125,14 @@ fn tree(state: State<'_, AppState>) -> ApiResult<Vec<TreeNode>> {
 }
 
 #[tauri::command(async)]
-fn read_file(state: State<'_, AppState>, path: String) -> ApiResult<FileDoc> {
-    files::read_text(&root_of(&state)?, &path)
+fn read_file(state: State<'_, AppState>, root_id: String, path: String) -> ApiResult<FileDoc> {
+    files::read_text(&root_of(&state, &root_id)?, &path)
 }
 
 #[tauri::command(async)]
 fn write_file(
     state: State<'_, AppState>,
+    root_id: String,
     path: String,
     content: String,
     mtime: Option<u64>,
@@ -115,7 +141,7 @@ fn write_file(
     force: Option<bool>,
 ) -> ApiResult<SaveResult> {
     files::write_text(
-        &root_of(&state)?,
+        &root_of(&state, &root_id)?,
         &path,
         &content,
         mtime,
@@ -158,8 +184,8 @@ fn open_path(path: String) -> ApiResult<()> {
 }
 
 #[tauri::command(async)]
-fn reveal_path(state: State<'_, AppState>, path: String) -> ApiResult<()> {
-    let target = paths::safe_join(&root_of(&state)?, &path)?;
+fn reveal_path(state: State<'_, AppState>, root_id: String, path: String) -> ApiResult<()> {
+    let target = paths::safe_join(&root_of(&state, &root_id)?, &path)?;
     if !target.exists() {
         return Err(ApiError::not_found("file not found"));
     }
@@ -201,12 +227,13 @@ fn open_url(url: String) -> ApiResult<()> {
 #[tauri::command(async)]
 fn search_grep(
     state: State<'_, AppState>,
+    root_id: String,
     query: String,
     regex: Option<bool>,
     case_sensitive: Option<bool>,
 ) -> ApiResult<GrepResponse> {
     search::grep(
-        &root_of(&state)?,
+        &root_of(&state, &root_id)?,
         &query,
         regex.unwrap_or(false),
         case_sensitive.unwrap_or(false),
@@ -214,48 +241,73 @@ fn search_grep(
 }
 
 #[tauri::command(async)]
-fn upload(state: State<'_, AppState>, dir: String, name: String, data: String) -> ApiResult<String> {
-    files::save_upload(&root_of(&state)?, &dir, &name, &data)
+fn upload(
+    state: State<'_, AppState>,
+    root_id: String,
+    dir: String,
+    name: String,
+    data: String,
+) -> ApiResult<String> {
+    files::save_upload(&root_of(&state, &root_id)?, &dir, &name, &data)
 }
 
 #[tauri::command(async)]
-fn create_entry(state: State<'_, AppState>, path: String, kind: String) -> ApiResult<String> {
-    files::create_entry(&root_of(&state)?, &path, kind == "dir")
+fn create_entry(
+    state: State<'_, AppState>,
+    root_id: String,
+    path: String,
+    kind: String,
+) -> ApiResult<String> {
+    files::create_entry(&root_of(&state, &root_id)?, &path, kind == "dir")
 }
 
 #[tauri::command(async)]
-fn rename_entry(state: State<'_, AppState>, path: String, name: String) -> ApiResult<String> {
-    files::rename_entry(&root_of(&state)?, &path, &name)
+fn rename_entry(
+    state: State<'_, AppState>,
+    root_id: String,
+    path: String,
+    name: String,
+) -> ApiResult<String> {
+    files::rename_entry(&root_of(&state, &root_id)?, &path, &name)
 }
 
 #[tauri::command(async)]
 fn transfer_entry(
     state: State<'_, AppState>,
+    root_id: String,
     from: String,
     to: String,
     copy: Option<bool>,
 ) -> ApiResult<String> {
-    files::transfer_entry(&root_of(&state)?, &from, &to, copy.unwrap_or(false))
+    files::transfer_entry(&root_of(&state, &root_id)?, &from, &to, copy.unwrap_or(false))
 }
 
 #[tauri::command(async)]
-fn trash_entry(state: State<'_, AppState>, path: String) -> ApiResult<String> {
-    files::trash_entry(&root_of(&state)?, &path)
+fn trash_entry(state: State<'_, AppState>, root_id: String, path: String) -> ApiResult<String> {
+    files::trash_entry(&root_of(&state, &root_id)?, &path)
 }
 
 #[tauri::command(async)]
-fn trash_list(state: State<'_, AppState>) -> ApiResult<Vec<files::TrashEntry>> {
-    files::trash_list(&root_of(&state)?)
+fn trash_list(
+    state: State<'_, AppState>,
+    root_id: String,
+) -> ApiResult<Vec<files::TrashEntry>> {
+    files::trash_list(&root_of(&state, &root_id)?)
 }
 
 #[tauri::command(async)]
-fn trash_purge(state: State<'_, AppState>, path: String) -> ApiResult<()> {
-    files::trash_purge(&root_of(&state)?, &path)
+fn trash_purge(state: State<'_, AppState>, root_id: String, path: String) -> ApiResult<()> {
+    files::trash_purge(&root_of(&state, &root_id)?, &path)
 }
 
 #[tauri::command(async)]
-fn restore_entry(state: State<'_, AppState>, from: String, to: String) -> ApiResult<String> {
-    files::restore_entry(&root_of(&state)?, &from, &to)
+fn restore_entry(
+    state: State<'_, AppState>,
+    root_id: String,
+    from: String,
+    to: String,
+) -> ApiResult<String> {
+    files::restore_entry(&root_of(&state, &root_id)?, &from, &to)
 }
 
 #[tauri::command]
@@ -286,7 +338,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             info,
             root_add,
-            root_set,
+            root_set_active,
             root_remove,
             tree,
             read_file,
@@ -308,13 +360,7 @@ pub fn run() {
             settings_set
         ])
         .setup(|app| {
-            let handle = app.handle().clone();
-            let root = app.state::<AppState>().root_path();
-            if let Some(state) = app.try_state::<AppState>() {
-                if let Ok(mut slot) = state.watcher.lock() {
-                    *slot = root.and_then(|path| watch::start(handle, path));
-                }
-            }
+            sync_watchers(&app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

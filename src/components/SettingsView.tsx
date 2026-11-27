@@ -22,11 +22,11 @@ type Tab = 'roots' | 'editor' | 'vim' | 'shortcuts' | 'about'
 
 interface Props {
   roots: RootEntry[]
-  activeId: string
-  activePath: AbsPath
+  activeIds: string[]
+  focusedPath: AbsPath
   settings: AppSettings
   settingsPath: AbsPath
-  onSwitch: (id: string) => Promise<void>
+  onSetActive: (id: string, active: boolean) => Promise<void>
   onAdd: (path: AbsPath, name?: string) => Promise<void>
   onRemove: (id: string) => Promise<void>
   onSettingsChange: (settings: AppSettings) => void
@@ -105,11 +105,11 @@ const REMAP_MODES: { key: VimRemap['mode']; label: string }[] = [
 
 export function SettingsView({
   roots,
-  activeId,
-  activePath,
+  activeIds,
+  focusedPath,
   settings,
   settingsPath,
-  onSwitch,
+  onSetActive,
   onAdd,
   onRemove,
   onSettingsChange,
@@ -396,7 +396,7 @@ export function SettingsView({
             )}
             <ul className="root-list">
               {roots.map((root) => {
-                const active = root.id === activeId
+                const active = activeIds.includes(root.id)
                 return (
                   <li key={root.id} className={`root-item ${active ? 'active' : ''}`}>
                     <span className={`material-symbols-rounded root-icon ${active ? 'tone-folder' : ''}`}>
@@ -412,37 +412,37 @@ export function SettingsView({
                       </div>
                     </div>
                     <div className="root-actions">
-                      {!active && (
-                        <button type="button" className="btn" disabled={busy} onClick={() => void run(() => onSwitch(root.id))}>
-                          Switch
-                        </button>
-                      )}
-                      {roots.length > 1 && (
-                        <button
-                          type="button"
-                          className="btn danger"
+                      <label className="switch" title={active ? 'Hide from the file tree' : 'Show in the file tree'}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Show ${root.name} in the file tree`}
+                          checked={active}
                           disabled={busy}
-                          onClick={() => {
-                            void (async () => {
-                              const confirmed = await askConfirm(
-                                `Remove "${root.name}" from the list? The folder itself is not deleted.`,
-                              )
-                              if (!confirmed) return
-                              await run(() => onRemove(root.id))
-                            })()
-                          }}
-                        >
-                          Remove
-                        </button>
-                      )}
+                          onChange={() => void run(() => onSetActive(root.id, !active))}
+                        />
+                        <span className="switch-track" />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn danger"
+                        disabled={busy}
+                        onClick={() => {
+                          void (async () => {
+                            const confirmed = await askConfirm(
+                              `Remove "${root.name}" from the list? The folder itself is not deleted.`,
+                            )
+                            if (!confirmed) return
+                            await run(() => onRemove(root.id))
+                          })()
+                        }}
+                      >
+                        Remove
+                      </button>
                     </div>
                   </li>
                 )
               })}
             </ul>
-            {roots.length === 1 && (
-              <p className="settings-note">The last folder cannot be removed.</p>
-            )}
 
             <section className="settings-section">
               <h2 className="settings-section-title">Add a folder</h2>
@@ -1122,8 +1122,8 @@ export function SettingsView({
                 <dd>{version || 'Unknown'}</dd>
                 <dt>Config file</dt>
                 <dd>{settingsPath || '~/.config/mdlite/mdlite.json'}</dd>
-                <dt>Current root</dt>
-                <dd>{activePath || 'None'}</dd>
+                <dt>Focused folder</dt>
+                <dd>{focusedPath || 'None'}</dd>
                 <dt>Vim</dt>
                 <dd>{draft.vimEnabled ? `On · leader ${draft.vimLeader}` : 'Off'}</dd>
               </dl>

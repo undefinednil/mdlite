@@ -3,12 +3,13 @@ import type {
   AppSettings,
   GrepFile,
   GrepResponse,
+  InfoResponse,
   RelPath,
   RootEntry,
   TreeNode,
   TrashEntry,
 } from '../../shared/types'
-import { ApiError, type Api, type GrepOptions } from '../api'
+import { ApiError, type Api, type GrepOptions, type RootApi, type RootsResult } from '../api'
 import { absPath, absolutePathFrom, baseName, contentHash, dirname, relPath } from './paths'
 import { documentUrl } from './documentUrl'
 import { defaultAppSettings } from './settings'
@@ -31,7 +32,7 @@ export interface FakeRoot {
   path: string
 }
 
-export interface FakeApi extends Api {
+export interface FakeApi extends Api, RootApi {
   readonly opened: string[]
   readonly openedUrls: string[]
   readonly revealed: string[]
@@ -46,6 +47,7 @@ export interface FakeApiOptions {
   id?: string
   roots?: FakeRoot[]
   activeRootId?: string
+  activeRootIds?: string[]
   files?: Record<string, string>
   dirs?: string[]
   settings?: AppSettings
@@ -76,8 +78,11 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
           path: defaultPath,
         },
       ]
-  let activeRootId = options.activeRootId ?? roots[0]?.id ?? ''
-  let currentRootPath = roots.find((root) => root.id === activeRootId)?.path ?? absPath('')
+  let activeIds = options.activeRootIds
+    ? [...options.activeRootIds]
+    : options.activeRootId
+      ? [options.activeRootId]
+      : roots.map((root) => root.id)
   let settings = clone(options.settings ?? defaultAppSettings)
   let lastMtime = 0
   const now = options.now ?? (() => Date.now())
@@ -86,7 +91,7 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
   const opened: string[] = []
   const openedUrls: string[] = []
   const revealed: string[] = []
-  const listeners = new Set<(paths: RelPath[]) => void>()
+  const listeners = new Set<(change: { rootId: string; paths: RelPath[] }) => void>()
 
   for (const root of roots) vaults.set(root.id, new Map())
 
@@ -95,70 +100,77 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
     return lastMtime
   }
 
-  const activeRoot = (): RootEntry | null =>
-    roots.find((root) => root.id === activeRootId) ?? roots[0] ?? null
+  const rootById = (id: string): RootEntry | null =>
+    roots.find((root) => root.id === id) ?? null
 
-  const vault = (): Map<string, FakeEntry> => {
-    const root = activeRoot()
-    if (!root) throw new ApiError('no folder is open', 'bad_request')
-    let entries = vaults.get(root.id)
+  const activeRootId = (): string =>
+    activeIds.find((id) => rootById(id)) ?? roots[0]?.id ?? ''
+
+  const activeRoot = (): RootEntry | null => rootById(activeRootId())
+
+  const vault = (rootId: string): Map<string, FakeEntry> => {
+    let entries = vaults.get(rootId)
     if (!entries) {
       entries = new Map()
-      vaults.set(root.id, entries)
+      vaults.set(rootId, entries)
     }
     return entries
   }
 
-  const absolutePath = (path: RelPath): AbsPath => absolutePathFrom(currentRootPath, path)
+  const rootPath = (rootId: string): AbsPath =>
+    rootById(rootId)?.path ?? absPath('')
 
-  const emit = (paths: string[]): void => {
+  const absolutePathFor = (rootId: string, path: RelPath): AbsPath =>
+    absolutePathFrom(rootPath(rootId), path)
+
+  const emit = (rootId: string, paths: string[]): void => {
     const unique = [...new Set(paths.map(relPath).filter(Boolean))]
     if (!unique.length) return
-    for (const listener of [...listeners]) listener(unique)
+    for (const listener of [...listeners]) listener({ rootId, paths: unique })
   }
 
-  const ensureParent = (path: string): void => {
+  const ensureParent = (rootId: string, path: string): void => {
     const parent = dirname(relPath(path))
     if (!parent) return
     let current = ''
     for (const part of parent.split('/')) {
       current = current ? `${current}/${part}` : part
-      if (!vault().has(current)) {
-        vault().set(current, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
+      if (!vault(rootId).has(current)) {
+        vault(rootId).set(current, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
       }
     }
   }
 
-  const putFile = (path: string, content: string, mtime: number, binary = false): void => {
-    ensureParent(path)
-    vault().set(path, { kind: 'file', content, mtime, size: byteSize(content), binary })
+  const putFile = (rootId: string, path: string, content: string, mtime: number, binary = false): void => {
+    ensureParent(rootId, path)
+    vault(rootId).set(path, { kind: 'file', content, mtime, size: byteSize(content), binary })
   }
 
-  const deleteTree = (path: string): void => {
-    for (const key of [...vault().keys()]) {
-      if (key === path || key.startsWith(`${path}/`)) vault().delete(key)
+  const deleteTree = (rootId: string, path: string): void => {
+    for (const key of [...vault(rootId).keys()]) {
+      if (key === path || key.startsWith(`${path}/`)) vault(rootId).delete(key)
     }
   }
 
-  const moveTree = (from: string, to: string): void => {
+  const moveTree = (rootId: string, from: string, to: string): void => {
     const moved: [string, FakeEntry][] = []
-    for (const [path, entry] of [...vault()]) {
+    for (const [path, entry] of [...vault(rootId)]) {
       if (path === from || path.startsWith(`${from}/`)) {
         moved.push([`${to}${path.slice(from.length)}`, entry])
-        vault().delete(path)
+        vault(rootId).delete(path)
       }
     }
-    for (const [path, entry] of moved) vault().set(path, entry)
+    for (const [path, entry] of moved) vault(rootId).set(path, entry)
   }
 
-  const copyTree = (from: string, to: string): void => {
+  const copyTree = (rootId: string, from: string, to: string): void => {
     const copied: [string, FakeEntry][] = []
-    for (const [path, entry] of [...vault()]) {
+    for (const [path, entry] of [...vault(rootId)]) {
       if (path === from || path.startsWith(`${from}/`)) {
         copied.push([`${to}${path.slice(from.length)}`, { ...entry }])
       }
     }
-    for (const [path, entry] of copied) vault().set(path, entry)
+    for (const [path, entry] of copied) vault(rootId).set(path, entry)
   }
 
   const assertName = (name: string): void => {
@@ -229,80 +241,33 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
     return walk('')
   }
 
+  const initialRoot = activeRootId()
   for (const dir of options.dirs ?? []) {
     const path = normalizePath(dir)
-    if (path) vault().set(path, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
+    if (path) vault(initialRoot).set(path, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
   }
   for (const [path, content] of Object.entries(options.files ?? {})) {
-    putFile(normalizePath(path), content, stamp())
+    putFile(initialRoot, normalizePath(path), content, stamp())
   }
 
-  return {
-    opened,
-    openedUrls,
-    revealed,
-    exported,
+  const info = async (): Promise<InfoResponse> => ({
+    roots: roots.map((root) => ({ ...root })),
+    active: [...activeIds],
+  })
 
-    info: async () => {
-      const root = activeRoot()
-      currentRootPath = root?.path ?? absPath('')
-      return {
-        root: root?.path ?? absPath(''),
-        name: root?.name ?? '',
-        id: root?.id ?? '',
-        roots: roots.map((entry) => ({ ...entry })),
-      }
-    },
+  const adopt = (): RootsResult => ({
+    roots: roots.map((root) => ({ ...root })),
+    active: [...activeIds],
+  })
 
-    addRoot: async (path: AbsPath, name?: string) => {
-      const resolved = absPath(path.replace(/\/+$/, '') || path)
-      const existing = roots.find((root) => root.path === resolved)
-      if (existing) return { root: { ...existing }, roots: roots.map((root) => ({ ...root })) }
-
-      let counter = roots.length + 1
-      while (roots.some((root) => root.id === `root-${counter}`)) counter += 1
-      const root: RootEntry = {
-        id: `root-${counter}`,
-        name: name?.trim() || baseName(resolved) || resolved,
-        path: resolved,
-      }
-      roots.push(root)
-      vaults.set(root.id, new Map())
-      return { root: { ...root }, roots: roots.map((entry) => ({ ...entry })) }
-    },
-
-    setRoot: async (id: string) => {
-      const root = roots.find((entry) => entry.id === id)
-      if (!root) throw new ApiError('unknown root', 'not_found')
-      activeRootId = root.id
-      currentRootPath = root.path
-      return {
-        root: { ...root },
-        roots: roots.map((entry) => ({ ...entry })),
-      }
-    },
-
-    removeRoot: async (id: string) => {
-      if (roots.length <= 1) throw new ApiError('cannot remove the last root', 'bad_request')
-      const index = roots.findIndex((root) => root.id === id)
-      if (index < 0) throw new ApiError('unknown root', 'not_found')
-      roots.splice(index, 1)
-      vaults.delete(id)
-      if (activeRootId === id) {
-        activeRootId = roots[0]?.id ?? ''
-        currentRootPath = roots[0]?.path ?? absPath('')
-      }
-      return {
-        roots: roots.map((root) => ({ ...root })),
-        active: activeRoot()?.id ?? '',
-      }
-    },
-
-    tree: async () => ({ nodes: buildTree(vault()) }),
+  const rootApi = (rootId: string): RootApi => ({
+    rootId,
+    rootPath: rootPath(rootId),
+    tree: async () => ({ nodes: buildTree(vault(rootId)) }),
 
     read: async (path: RelPath) => {
       const normalized = normalizePath(path)
-      const entry = vault().get(normalized)
+      const entry = vault(rootId).get(normalized)
       if (!entry) throw new ApiError('not found', 'not_found')
       if (entry.kind === 'dir') throw new ApiError('is a folder', 'bad_request')
       if (entry.binary) throw new ApiError('file is not text', 'binary')
@@ -323,7 +288,7 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       force = false,
     ) => {
       const normalized = normalizePath(path)
-      const existing = vault().get(normalized)
+      const existing = vault(rootId).get(normalized)
       if (existing?.kind === 'dir') throw new ApiError('is a folder', 'bad_request')
       if (existing && !force) {
         const changed = existing.mtime !== mtime
@@ -336,28 +301,20 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
           })
         }
       }
-      putFile(normalized, content, stamp())
-      emit([normalized])
-      const saved = vault().get(normalized)
+      putFile(rootId, normalized, content, stamp())
+      emit(rootId, [normalized])
+      const saved = vault(rootId).get(normalized)
       return { path: normalized, mtime: saved?.mtime ?? 0, size: saved?.size ?? 0 }
     },
 
-    saveText: async (path: AbsPath, content: string) => {
-      exported.set(path, content)
-    },
-
-    absolutePath,
+    absolutePath: (path: RelPath) => absolutePathFor(rootId, path),
 
     open: async (path: RelPath) => {
-      opened.push(absolutePath(path))
+      opened.push(absolutePathFor(rootId, path))
     },
 
     reveal: async (path: RelPath) => {
       revealed.push(path)
-    },
-
-    openUrl: async (url: string) => {
-      openedUrls.push(url)
     },
 
     grep: (query: string, opts: GrepOptions = {}): Promise<GrepResponse> => {
@@ -373,7 +330,7 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
         }
       }
       const needle = opts.caseSensitive ? query : query.toLowerCase()
-      for (const [path, entry] of vault()) {
+      for (const [path, entry] of vault(rootId)) {
         if (entry.kind !== 'file' || path.split('/').some((part) => part.startsWith('.'))) continue
         const matches: { line: number; text: string }[] = []
         const lines = entry.content.split('\n')
@@ -396,15 +353,13 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       return Promise.resolve({ files, truncated, tookMs: 0 })
     },
 
-    rawUrl: (path: RelPath) => `fake://${absolutePath(path)}`,
+    rawUrl: (path: RelPath) => `fake://${absolutePathFor(rootId, path)}`,
 
-    assetUrl: (path: AbsPath) => `fake://${path}`,
-
-    htmlUrl: (path: RelPath) => documentUrl(absolutePath(path)),
+    htmlUrl: (path: RelPath) => documentUrl(absolutePathFor(rootId, path)),
 
     upload: async (dir: RelPath, file: File) => {
       const dirPath = normalizePath(dir)
-      const target = dirPath ? vault().get(dirPath) : { kind: 'dir' as const }
+      const target = dirPath ? vault(rootId).get(dirPath) : { kind: 'dir' as const }
       if (target?.kind !== 'dir') throw new ApiError('target folder does not exist', 'bad_request')
       const bytes = new Uint8Array(await file.arrayBuffer())
       if (bytes.length > 60 * 1024 * 1024) {
@@ -418,92 +373,92 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       const extension = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : 'png'
       let name = `${stem || 'media'}.${extension}`
       let counter = 1
-      while (vault().has([dirPath, 'images', name].filter(Boolean).join('/'))) {
+      while (vault(rootId).has([dirPath, 'images', name].filter(Boolean).join('/'))) {
         name = `${stem || 'media'}-${counter}.${extension}`
         counter += 1
       }
       const path = [dirPath, 'images', name].filter(Boolean).join('/')
-      ensureParent(path)
-      vault().set(path, {
+      ensureParent(rootId, path)
+      vault(rootId).set(path, {
         kind: 'file',
         content: '',
         mtime: stamp(),
         size: bytes.length,
         binary: true,
       })
-      emit([path])
+      emit(rootId, [path])
       return { path: relPath(`images/${name}`) }
     },
 
     create: async (path: RelPath, type: 'file' | 'dir') => {
       const normalized = normalizePath(path)
       if (!normalized) throw new ApiError('invalid path', 'bad_request')
-      if (vault().has(normalized)) throw new ApiError('already exists', 'exists')
+      if (vault(rootId).has(normalized)) throw new ApiError('already exists', 'exists')
       if (type === 'dir') {
-        ensureParent(normalized)
-        vault().set(normalized, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
+        ensureParent(rootId, normalized)
+        vault(rootId).set(normalized, { kind: 'dir', content: '', mtime: stamp(), size: 0 })
       } else {
-        putFile(normalized, '', stamp())
+        putFile(rootId, normalized, '', stamp())
       }
-      emit([normalized])
+      emit(rootId, [normalized])
       return { path: normalized }
     },
 
     rename: async (path: RelPath, name: string) => {
       assertName(name)
       const from = normalizePath(path)
-      const fromEntry = vault().get(from)
+      const fromEntry = vault(rootId).get(from)
       if (!fromEntry) throw new ApiError('not found', 'not_found')
       const to = relPath(dirname(from) ? `${dirname(from)}/${name}` : name)
-      if (vault().has(to)) throw new ApiError('target already exists', 'exists')
-      moveTree(from, to)
-      emit([from, to])
+      if (vault(rootId).has(to)) throw new ApiError('target already exists', 'exists')
+      moveTree(rootId, from, to)
+      emit(rootId, [from, to])
       return { path: to }
     },
 
     transfer: async (from: RelPath, to: RelPath, copy: boolean) => {
       const source = normalizePath(from)
       const target = normalizePath(to)
-      const sourceEntry = vault().get(source)
+      const sourceEntry = vault(rootId).get(source)
       if (!sourceEntry) throw new ApiError('not found', 'not_found')
       if (source === target || (sourceEntry.kind === 'dir' && target.startsWith(`${source}/`))) {
         throw new ApiError('cannot move or copy a folder into itself', 'bad_request')
       }
-      if (vault().has(target)) throw new ApiError('target already exists', 'exists')
-      ensureParent(target)
-      if (copy) copyTree(source, target)
-      else moveTree(source, target)
-      emit([source, target])
+      if (vault(rootId).has(target)) throw new ApiError('target already exists', 'exists')
+      ensureParent(rootId, target)
+      if (copy) copyTree(rootId, source, target)
+      else moveTree(rootId, source, target)
+      emit(rootId, [source, target])
       return { path: target }
     },
 
     trash: async (path: RelPath) => {
       const from = normalizePath(path)
       if (!from) throw new ApiError('cannot trash the root folder', 'bad_request')
-      const entry = vault().get(from)
+      const entry = vault(rootId).get(from)
       if (!entry) throw new ApiError('not found', 'not_found')
       const deletedAt = stamp()
       const name = baseName(from)
       let entryName = name
       let target = relPath(`${TRASH_DIR}/${entryName}`)
-      if (vault().has(target)) {
+      if (vault(rootId).has(target)) {
         let attempt = 0
-        while (vault().has(target)) {
+        while (vault(rootId).has(target)) {
           entryName = `${name}-${deletedAt + attempt}`
           target = relPath(`${TRASH_DIR}/${entryName}`)
           attempt += 1
         }
       }
-      moveTree(from, target)
+      moveTree(rootId, from, target)
       entry.original = from
       entry.deletedAt = deletedAt
-      emit([from, target])
+      emit(rootId, [from, target])
       return { path: target }
     },
 
     trashList: async () => {
       const entries: TrashEntry[] = []
-      for (const [path, entry] of vault()) {
+      for (const [path, entry] of vault(rootId)) {
         if (!path.startsWith(`${TRASH_DIR}/`)) continue
         if (path.slice(TRASH_DIR.length + 1).includes('/')) continue
         entries.push({
@@ -527,10 +482,10 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       if (!target.startsWith(`${TRASH_DIR}/`)) {
         throw new ApiError('not a trash path', 'bad_request')
       }
-      const entry = vault().get(target)
+      const entry = vault(rootId).get(target)
       if (!entry) throw new ApiError('not found', 'not_found')
-      deleteTree(target)
-      emit([target])
+      deleteTree(rootId, target)
+      emit(rootId, [target])
     },
 
     restore: async (from: RelPath, to: RelPath) => {
@@ -542,16 +497,72 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       if (!target || target === TRASH_DIR || target.startsWith(`${TRASH_DIR}/`)) {
         throw new ApiError('cannot restore into the trash', 'bad_request')
       }
-      const entry = vault().get(source)
+      const entry = vault(rootId).get(source)
       if (!entry) throw new ApiError('not found', 'not_found')
-      if (vault().has(target)) throw new ApiError('target already exists', 'exists')
-      ensureParent(target)
-      moveTree(source, target)
+      if (vault(rootId).has(target)) throw new ApiError('target already exists', 'exists')
+      ensureParent(rootId, target)
+      moveTree(rootId, source, target)
       delete entry.deletedAt
       delete entry.original
-      emit([source, target])
+      emit(rootId, [source, target])
       return { path: target }
     },
+  })
+
+  const active = rootApi(initialRoot)
+
+  const api: FakeApi = {
+    ...active,
+    opened,
+    openedUrls,
+    revealed,
+    exported,
+
+    info,
+    addRoot: async (path: AbsPath, name?: string) => {
+      const resolved = absPath(path.replace(/\/+$/, '') || path)
+      const existing = roots.find((root) => root.path === resolved)
+      if (existing) {
+        if (!activeIds.includes(existing.id)) activeIds.push(existing.id)
+        return adopt()
+      }
+      let counter = roots.length + 1
+      while (roots.some((root) => root.id === `root-${counter}`)) counter += 1
+      const root: RootEntry = {
+        id: `root-${counter}`,
+        name: name?.trim() || baseName(resolved) || resolved,
+        path: resolved,
+      }
+      roots.push(root)
+      vaults.set(root.id, new Map())
+      activeIds.push(root.id)
+      return adopt()
+    },
+    setRootActive: async (id: string, active: boolean) => {
+      if (!rootById(id)) throw new ApiError('unknown root', 'not_found')
+      activeIds = activeIds.filter((current) => current !== id)
+      if (active) activeIds.push(id)
+      return adopt()
+    },
+    removeRoot: async (id: string) => {
+      const index = roots.findIndex((root) => root.id === id)
+      if (index < 0) throw new ApiError('unknown root', 'not_found')
+      roots.splice(index, 1)
+      vaults.delete(id)
+      activeIds = activeIds.filter((current) => current !== id)
+      return adopt()
+    },
+    forRoot: (id: string) => (id ? rootApi(id) : api),
+
+    saveText: async (path: AbsPath, content: string) => {
+      exported.set(path, content)
+    },
+
+    openUrl: async (url: string) => {
+      openedUrls.push(url)
+    },
+
+    assetUrl: (path: AbsPath) => `fake://${path}`,
 
     settings: async () => ({
       settings: clone(settings),
@@ -566,7 +577,7 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
       }
     },
 
-    subscribeChanges(handler: (paths: RelPath[]) => void): () => void {
+    subscribeChanges(handler: (change: { rootId: string; paths: RelPath[] }) => void): () => void {
       listeners.add(handler)
       return () => listeners.delete(handler)
     },
@@ -574,18 +585,53 @@ export function createFakeApi(options: FakeApiOptions = {}): FakeApi {
     writeFile(path: RelPath, content: string): void {
       const normalized = normalizePath(path)
       if (!normalized) throw new ApiError('invalid path', 'bad_request')
-      if (vault().get(normalized)?.kind === 'dir') {
+      if (vault(initialRoot).get(normalized)?.kind === 'dir') {
         throw new ApiError('is a folder', 'bad_request')
       }
-      putFile(normalized, content, stamp())
-      emit([normalized])
+      putFile(initialRoot, normalized, content, stamp())
+      emit(initialRoot, [normalized])
     },
 
     deleteFile(path: RelPath): void {
       const normalized = normalizePath(path)
-      if (!vault().has(normalized)) throw new ApiError('not found', 'not_found')
-      deleteTree(normalized)
-      emit([normalized])
+      if (!vault(initialRoot).has(normalized)) throw new ApiError('not found', 'not_found')
+      deleteTree(initialRoot, normalized)
+      emit(initialRoot, [normalized])
     },
   }
+
+  // The aggregate API behaves like the first active root for older single-root
+  // callers. forRoot(rootId) is the multi-root path.
+  Object.defineProperty(api, 'rootId', { get: () => activeRootId(), configurable: true })
+  Object.defineProperty(api, 'rootPath', {
+    get: () => rootPath(activeRootId()),
+    configurable: true,
+  })
+  for (const method of [
+    'tree',
+    'read',
+    'save',
+    'absolutePath',
+    'open',
+    'reveal',
+    'grep',
+    'rawUrl',
+    'htmlUrl',
+    'upload',
+    'create',
+    'rename',
+    'transfer',
+    'trash',
+    'trashList',
+    'purgeTrash',
+    'restore',
+  ] as const) {
+    Object.defineProperty(api, method, {
+      value: (...args: unknown[]) =>
+        (rootApi(activeRootId())[method] as (...values: unknown[]) => unknown)(...args),
+      configurable: true,
+    })
+  }
+
+  return api
 }

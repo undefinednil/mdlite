@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { rankFuzzy } from '../../shared/fuzzy'
-import type { GrepFile, RelPath } from '../../shared/types'
+import type { GrepFile, RelPath, RootEntry, RootedPath } from '../../shared/types'
 import { api } from '../api'
-import { highlightSegments } from '../lib/paths'
+import { highlightSegments, rootedPath } from '../lib/paths'
 import { rowClassName, rowLeading, rowMoveIndex, rowView } from '../lib/row'
 import { createSelection } from '../lib/selection'
 import { matchesBinding } from '../lib/shortcuts'
@@ -10,25 +10,42 @@ import { useSelectionSnapshot } from '../lib/useSelection'
 
 export type PaletteMode = 'files' | 'content'
 
+export interface PaletteRoot {
+  root: RootEntry
+  files: RelPath[]
+}
+
 interface Props {
   mode: PaletteMode
-  files: RelPath[]
+  roots: PaletteRoot[]
   onClose: () => void
-  onOpenFile: (path: RelPath, jump?: { text: string; query: string }) => void
+  onOpenFile: (target: RootedPath, jump?: { text: string; query: string }) => void
 }
 
 type Entry =
-  | { kind: 'file'; key: string; path: RelPath; indices: number[] }
-  | { kind: 'match'; key: string; path: RelPath; line: number; text: string }
+  | { kind: 'file'; key: string; rootId: string; path: RelPath; label: string; indices: number[] }
+  | {
+      kind: 'match'
+      key: string
+      rootId: string
+      path: RelPath
+      label: string
+      line: number
+      text: string
+    }
 
-function matchKey(path: RelPath, line: number, text: string): string {
-  return `match:${path}:${line}:${text}`
+function matchKey(rootId: string, path: RelPath, line: number, text: string): string {
+  return `match:${rootId}:${path}:${line}:${text}`
 }
 
-export function Palette({ mode, files, onClose, onOpenFile }: Props) {
+function labelFor(root: RootEntry, path: RelPath): string {
+  return `${root.name}/${path}`
+}
+
+export function Palette({ mode, roots, onClose, onOpenFile }: Props) {
   const [query, setQuery] = useState('')
   const [regex, setRegex] = useState(false)
-  const [grepFiles, setGrepFiles] = useState<GrepFile[]>([])
+  const [grepFiles, setGrepFiles] = useState<(GrepFile & { rootId: string })[]>([])
   const [grepLoading, setGrepLoading] = useState(false)
   const [grepError, setGrepError] = useState<string | null>(null)
   const [truncated, setTruncated] = useState(false)
@@ -99,12 +116,26 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
     let cancelled = false
     setGrepLoading(true)
     const timer = setTimeout(() => {
-      api
-        .grep(q, { regex })
-        .then((result) => {
+      Promise.all(
+        roots.map(({ root }) =>
+          api
+            .forRoot(root.id)
+            .grep(q, { regex })
+            .then((result) => ({
+              rootId: root.id,
+              files: result.files,
+              truncated: result.truncated,
+            })),
+        ),
+      )
+        .then((results) => {
           if (cancelled) return
-          setGrepFiles(result.files)
-          setTruncated(result.truncated)
+          setGrepFiles(
+            results.flatMap((result) =>
+              result.files.map((file) => ({ ...file, rootId: result.rootId })),
+            ),
+          )
+          setTruncated(results.some((result) => result.truncated))
           setGrepError(null)
         })
         .catch((error: Error) => {
@@ -121,35 +152,57 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [query, regex, mode])
+  }, [query, regex, mode, roots])
 
   const entries = useMemo<Entry[]>(() => {
     if (mode === 'files') {
+      const choices = roots.flatMap(({ root, files }) =>
+        files.map((path) => ({ rootId: root.id, path, label: labelFor(root, path) })),
+      )
       if (!query.trim()) {
-        return files.slice(0, 80).map((path) => ({ kind: 'file' as const, key: `file:${path}`, path, indices: [] }))
+        return choices.slice(0, 80).map((choice) => ({
+          kind: 'file' as const,
+          key: `file:${choice.rootId}:${choice.path}`,
+          ...choice,
+          indices: [],
+        }))
       }
-      return rankFuzzy(query, files, 80).map((result) => ({
-        kind: 'file' as const,
-        key: `file:${result.path}`,
-        path: result.path,
-        indices: result.indices,
-      }))
+      return rankFuzzy(
+        query,
+        choices.map((choice) => choice.label),
+        80,
+      ).flatMap((result) => {
+        const choice = choices.find((entry) => entry.label === result.path)
+        if (!choice) return []
+        return [
+          {
+            kind: 'file' as const,
+            key: `file:${choice.rootId}:${choice.path}`,
+            ...choice,
+            indices: result.indices,
+          },
+        ]
+      })
     }
 
     const out: Entry[] = []
     for (const file of grepFiles) {
+      const root = roots.find((entry) => entry.root.id === file.rootId)?.root
+      const label = root ? labelFor(root, file.path) : file.path
       for (const match of file.matches) {
         out.push({
           kind: 'match',
-          key: matchKey(file.path, match.line, match.text),
+          key: matchKey(file.rootId, file.path, match.line, match.text),
+          rootId: file.rootId,
           path: file.path,
+          label,
           line: match.line,
           text: match.text,
         })
       }
     }
     return out
-  }, [mode, query, files, grepFiles])
+  }, [mode, query, roots, grepFiles])
 
   const entryKeys = useMemo(() => entries.map((entry) => entry.key), [entries])
   const cursorIndex = cursor === null ? -1 : entryKeys.indexOf(cursor)
@@ -172,11 +225,12 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
   const open = (entry: Entry | undefined) => {
     if (!entry) return
     skipRestoreRef.current = true
+    const target = rootedPath(entry.rootId, entry.path)
     if (entry.kind === 'file') {
-      onOpenFile(entry.path)
+      onOpenFile(target)
       return
     }
-    onOpenFile(entry.path, { text: entry.text.trim(), query: query.trim() })
+    onOpenFile(target, { text: entry.text.trim(), query: query.trim() })
   }
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -237,7 +291,7 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
           {mode === 'files' &&
             entries.map((entry, index) => {
               if (entry.kind !== 'file') return null
-              const segments = highlightSegments(entry.path, entry.indices)
+              const segments = highlightSegments(entry.label, entry.indices)
               const view = rowView({
                 base: 'palette-item',
                 path: entry.path,
@@ -247,7 +301,7 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
               const { icon } = rowLeading(view)
               return (
                 <div
-                  key={entry.path}
+                  key={entry.key}
                   data-index={index}
                   className={view.className}
                   onMouseMove={() => selection.select(entry.key)}
@@ -274,10 +328,15 @@ export function Palette({ mode, files, onClose, onOpenFile }: Props) {
               )}
               {entries.map((entry, index) => {
                 if (entry.kind !== 'match') return null
-                const isFirstOfFile = index === 0 || entries[index - 1]?.path !== entry.path
+                const fileKey = `${entry.rootId}:${entry.path}`
+                const previousKey =
+                  index > 0
+                    ? `${entries[index - 1]!.rootId}:${entries[index - 1]!.path}`
+                    : ''
+                const isFirstOfFile = index === 0 || previousKey !== fileKey
                 return (
                   <div key={entry.key}>
-                    {isFirstOfFile && <div className="palette-file">{entry.path}</div>}
+                    {isFirstOfFile && <div className="palette-file">{entry.label}</div>}
                     <div
                       data-index={index}
                       className={rowClassName('palette-match', { active: entry.key === cursor })}

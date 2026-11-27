@@ -16,10 +16,8 @@ test('reads seeded files and builds a sorted tree', async () => {
   })
 
   assert.deepEqual(await api.info(), {
-    root: '/vault',
-    name: 'vault',
-    id: 'root-1',
     roots: [{ id: 'root-1', name: 'vault', path: '/vault' }],
+    active: ['root-1'],
   })
 
   const doc = await api.read(relPath('notes/a.md'))
@@ -156,48 +154,50 @@ test('rejects a rename onto an existing name and a move onto an existing path', 
   })
 })
 
-test('keeps vaults apart when the active root switches', async () => {
+test('keeps vaults apart by root id', async () => {
   const api = createFakeApi({
     roots: [
       { id: 'a', name: 'A', path: '/a' },
       { id: 'b', name: 'B', path: '/b' },
     ],
-    activeRootId: 'a',
+    activeRootIds: ['a', 'b'],
     files: { 'note.md': 'in a' },
   })
+  const a = api.forRoot('a')
+  const b = api.forRoot('b')
 
-  assert.equal(api.absolutePath(relPath('note.md')), '/a/note.md')
-  await api.setRoot('b')
-  assert.equal(api.absolutePath(relPath('note.md')), '/b/note.md')
-  await assert.rejects(api.read(relPath('note.md')), (error: unknown) => {
+  assert.equal(a.absolutePath(relPath('note.md')), '/a/note.md')
+  assert.equal(b.absolutePath(relPath('note.md')), '/b/note.md')
+  await assert.rejects(b.read(relPath('note.md')), (error: unknown) => {
     assert.ok(error instanceof ApiError)
     assert.equal(error.kind, 'not_found')
     return true
   })
 
-  await api.save(relPath('note.md'), 'in b', 0, 0, '')
-  await api.setRoot('a')
-  assert.equal((await api.read(relPath('note.md'))).content, 'in a')
+  await b.save(relPath('note.md'), 'in b', 0, 0, '')
+  assert.equal((await a.read(relPath('note.md'))).content, 'in a')
 
   await api.removeRoot('a')
-  await assert.rejects(api.removeRoot('b'), (error: unknown) => {
-    assert.ok(error instanceof ApiError)
-    assert.equal(error.kind, 'bad_request')
-    return true
+  assert.deepEqual(await api.info(), {
+    roots: [{ id: 'b', name: 'B', path: '/b' }],
+    active: ['b'],
   })
+
+  await api.removeRoot('b')
+  assert.deepEqual(await api.info(), { roots: [], active: [] })
 })
 
 test('publishes changed paths until the subscription is removed', async () => {
   const api = createFakeApi({ files: { 'notes/a.md': 'one' } })
-  const seen: string[][] = []
-  const off = api.subscribeChanges((paths) => seen.push(paths))
+  const seen: { rootId: string; paths: string[] }[] = []
+  const off = api.subscribeChanges((change) => seen.push(change))
 
   api.writeFile(relPath('notes/a.md'), 'two')
-  assert.deepEqual(seen, [['notes/a.md']])
+  assert.deepEqual(seen, [{ rootId: 'root-1', paths: ['notes/a.md'] }])
 
   off()
   api.writeFile(relPath('notes/b.md'), 'b')
-  assert.deepEqual(seen, [['notes/a.md']])
+  assert.deepEqual(seen, [{ rootId: 'root-1', paths: ['notes/a.md'] }])
 })
 
 test('returns the canonical relative path from every file operation', async () => {

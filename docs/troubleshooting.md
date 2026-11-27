@@ -25,7 +25,13 @@ Remove the app from the Dock and add it back if the old icon remains.
 - Read the terminal that ran `npm run dev`. A Rust compile error stops the window from opening.
 - The Tauri window loads `http://localhost:5173`. Make sure Vite is running and the port is free.
 - Development builds allow the webview devtools. Press `Cmd+Alt+I` on macOS or `Ctrl+Shift+I` on Windows to see JavaScript errors.
-- If the window opens but the tree is empty, open Settings and confirm the root folder exists and is readable.
+- If the window opens but the tree is empty, open Settings and confirm at least one root is active and its folder is readable.
+
+## The sidebar says "No active folders"
+
+**Cause:** The root list still has folders, but every root is switched off in Settings → Root folders.
+
+**Fix:** Turn on at least one root. Removing every root is also allowed; the app then shows the open-a-folder screen instead. It does not open a folder picker by itself.
 
 ## Dropping a file from outside the app does nothing
 
@@ -50,7 +56,7 @@ Dropped files above 4,000,000 bytes are rejected; the read cap inside a root is 
 - **Reload** discards your edits and takes the disk version. It re-reads the full file with `read_file`, so the 1 MiB conflict preview does not limit the reload.
 - **Overwrite** writes your version over the disk file. This sends `force` and skips the check.
 
-Switching files or folders, opening Settings or the trash, changing roots, opening a temporary file, toggling edit to view and closing the window all prompt to save, discard or cancel when the draft is dirty. A conflict cancels the switch and leaves the banner on the current file.
+Switching files or folders, opening Settings or the trash, toggling or removing a root, opening a temporary file, toggling edit to view and closing the window all prompt to save, discard or cancel when the draft is dirty. A conflict cancels the switch and leaves the banner on the current file.
 
 ## Vim mappings or options are not applied
 
@@ -65,11 +71,11 @@ Switching files or folders, opening Settings or the trash, changing roots, openi
 
 ## Content search finds nothing
 
-**Cause:** The query is outside the active root, the file is ignored, or the result hit a cap.
+**Cause:** The query is outside every active root, the file is ignored, or the result hit a cap.
 
 **Fix:**
 
-- Search only covers the active root and skips hidden folders and the app's ignore list.
+- Search covers every active root and skips hidden folders and the app's ignore list.
 - `rg` also respects `.gitignore` and `.ignore` files because `--no-ignore` is not passed. A file ignored there is skipped even when it is inside the root. The built-in fallback uses only the app's ignore list, so results can differ.
 - Search is case-insensitive by default in both substring and regex modes. The regex toggle does not change case handling.
 - The built-in fallback reads files up to 2 MB and skips files that are not valid UTF-8. Install `rg` (ripgrep) for full coverage and speed.
@@ -134,7 +140,7 @@ Switching files or folders, opening Settings or the trash, changing roots, openi
 
 **Fix:** Quit the app, then move or delete `~/.config/mdlite/mdlite.json`. On Windows that is `%USERPROFILE%\.config\mdlite\mdlite.json`.
 
-The next start seeds a root from `MDLITE_ROOT`, or opens the folder picker if that variable is unset, and restores the default editor settings and shortcuts. If `MDLITE_CONFIG` is set, the config is at that path instead.
+The next start seeds a root from `MDLITE_ROOT`, or shows the Open a folder screen if that variable is unset, and restores the default editor settings and shortcuts. If `MDLITE_CONFIG` is set, the config is at that path instead.
 
 A config from the earlier OS app-support location, or the older `~/.mdlite.json`, is imported once when the new file does not exist. Delete it as well if you want a completely fresh start; otherwise a later reset can import its roots again.
 

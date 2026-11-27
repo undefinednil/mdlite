@@ -52,7 +52,7 @@ The versions below are the ranges declared in `package.json` and `src-tauri/Carg
 
 The Rust side exposes 21 commands. Most filesystem work runs as async commands on worker threads instead of the native main thread. Config-only commands and `save_text_file` are synchronous. It owns:
 
-- The combined config: roots, active root, editor settings and shortcut overrides.
+- The combined config: roots, active roots, editor settings and shortcut overrides.
 - Reading and writing text, with an mtime, size and content-hash check before overwrite.
 - File operations: create, rename, move, copy, trash and restore.
 - Media upload validation and storage.

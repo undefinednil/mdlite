@@ -52,7 +52,7 @@ There are 22 commands:
 
 | Group | Commands |
 |---|---|
-| Root folders | `info`, `root_add`, `root_set`, `root_remove` |
+| Root folders | `info`, `root_add`, `root_set_active`, `root_remove` |
 | Tree and reading | `tree`, `read_file` |
 | Writing | `write_file`, `save_text_file` |
 | File operations | `create_entry`, `rename_entry`, `transfer_entry`, `trash_entry`, `trash_list`, `trash_purge`, `restore_entry` |
@@ -63,9 +63,9 @@ There are 22 commands:
 
 `tree` returns the whole root at once as nested nodes. The UI filters and sorts this snapshot in memory, which is why typing in the tree filter does not touch the disk.
 
-`tree`, `read_file`, `write_file`, `open_path`, `reveal_path`, `open_url`, `search_grep`, `upload` and the seven file operations are `#[tauri::command(async)]`. `save_text_file` is synchronous. The config-only commands (`info`, `root_add`, `root_set`, `root_remove`, `settings_get`, `settings_set`) are also synchronous.
+`tree`, `read_file`, `write_file`, `open_path`, `reveal_path`, `open_url`, `search_grep`, `upload` and the seven file operations are `#[tauri::command(async)]`. `save_text_file` is synchronous. The config-only commands (`info`, `root_add`, `root_set_active`, `root_remove`, `settings_get`, `settings_set`) are also synchronous.
 
-Only three places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target) and `open_path` (hand a file to the operating system). Every other operation that touches a file takes a root-relative path and resolves it with `paths::safe_join`. A leading slash means the root on purpose.
+Only three places accept an absolute path: `root_add` (folder from the native picker), `save_text_file` (export target) and `open_path` (hand a file to the operating system). Every other operation that touches a file takes a `rootId` and a root-relative path, looks up that root in the config, and resolves the path with `paths::safe_join`. A leading slash means the root on purpose. A command never guesses which root a path belongs to.
 
 `read_file`, `write_file`, `create_entry`, `rename_entry`, `transfer_entry`, `trash_entry` and `restore_entry` return the canonical root-relative path of the file they touched. The UI uses that returned path for selection and remapping, so a renamed or moved file keeps one identity even when the request was written with a leading slash or a `.` segment. The command list and payload field names do not change.
 
@@ -77,9 +77,9 @@ Only three places accept an absolute path: `root_add` (folder from the native pi
 
 **Dirty state.** `src/lib/session.ts` derives dirty once by comparing the draft with the document content, and the snapshot, the `settle` guard and the save check all read that value. `settle` calls `askSave`, which returns `save`, `discard` or `cancel`. The view runs it before switching file or folder, opening Settings or the trash, switching or removing a root, opening a temporary file, toggling edit to view and closing the window. `discard` resets the draft and closes the dialog. `cancel` or a failed save keeps the current view. There is no save on blur and no save timer.
 
-**Switch root.** The view runs the dirty guard, asks Rust to set the active root, then calls `session.reset()`. The reset clears the document, draft, conflict and any pending read, so a late read from the previous root cannot appear. The tree, selection, recents, scroll ratios, expanded folders and overlay flags are view state and are cleared there.
+**Active roots.** The config keeps every root and an active set. `root_set_active` toggles one id, and `root_remove` removes a root without requiring a replacement; an empty root list is valid. The sidebar renders one tree. Each active root is a normal root row at depth 0, with its children indented one level; a single root has no root row. The tree keeps per-root operations, expansion and current folder, while selection, filter, sort, scroll and drag state are shared across the roots. Adding, toggling or removing a root refreshes the active set and the watcher set. Toggling a root off closes an open document from that root after the dirty guard, and removing a root does the same, so every open document belongs to an active root.
 
-**File operations.** `src/lib/fileOperations.ts` owns create, rename, move, trash, paste, cut, copy, undo, the clipboard, the root guard and rollback. The tree passes explicit target paths; the module never reads the selection or the marked rows. Each call captures the active root id before its dialog, runs the dirty guard, checks the root id again, and checks it once more before every mutation. Completed steps of a multi-file operation are recorded and reversed in reverse order on failure. The result carries the changed paths (`from`/`to`), the failed paths and a typed `ApiError` or null, so the view can branch on the error kind while it remaps the selection, refreshes the tree and shows the status or error message. A root change during a dialog or between steps rejects the operation with `kind: "conflict"`. Every undo entry has the same shape (a label and the steps), and the module calls `session.rename` or `session.remove` after each mutation so the open document follows the canonical path.
+**File operations.** `src/lib/fileOperations.ts` owns create, rename, move, trash, paste, cut, copy, undo, the clipboard, the root guard and rollback. The app creates one instance per root, bound to that root's API and undo stack. The tree passes explicit target paths; the module never reads the selection or the marked rows. Each call captures its root id before its dialog, runs the dirty guard, checks the root id again, and checks it once more before every mutation. Completed steps of a multi-file operation are recorded and reversed in reverse order on failure. The result carries the changed paths (`from`/`to`), the failed paths and a typed `ApiError` or null, so the view can branch on the error kind while it remaps the selection, refreshes the tree and shows the status or error message. A root change during a dialog or between steps rejects the operation with `kind: "conflict"`. Every undo entry has the same shape (a label and the steps), and the module calls `session.rename` or `session.remove` after each mutation so the open document follows the canonical path.
 
 **Rename or remove the open file.** The file operations module calls `session.rename(from, to)` with the canonical paths after a rename, move or cut-paste, and the session remaps the open document when it is at or under `from`. A trash or a removed paste copy calls `session.remove(path)`, which clears the document when it is at or under the removed path. The view then remaps or clears its selection and shows the folder fallback or the empty state.
 
@@ -87,7 +87,7 @@ Only three places accept an absolute path: `root_add` (folder from the native pi
 
 **Search.** `search_grep` first runs `rg --json --no-config` in the root. Because `--no-ignore` is not passed, `.gitignore` and `.ignore` rules apply. If `rg` cannot start or returns an error, the pure-Rust fallback walks with `walkdir`, applies `is_ignored`, reads files up to 2 MB and matches case-insensitively by default. Both paths shorten lines at 240 characters and stop at 120 files, 6 matches per file and 400 matches.
 
-**React to outside changes.** `watch.rs` watches the active root recursively with `notify`. Events are collected on a channel and flushed after 250 ms of quiet, so one editor save does not produce several refreshes. The payload is a deduplicated list of relative paths. The view refreshes the tree and calls `session.reconcileDisk(paths)`. The session ignores paths that do not include the open document, and it ignores media and binary documents. One change batch is reconciled once: a disk copy that matches the draft is adopted, a clean document reloads, and a dirty document shows the conflict banner.
+**React to outside changes.** `watch.rs` watches every active root recursively with a watcher per root. Events are collected on a channel and flushed after 250 ms of quiet, so one editor save does not produce several refreshes. The payload carries `rootId` and a deduplicated list of that root's relative paths. The view refreshes that root's tree and, when the open document belongs to the same root, calls `session.reconcileDisk(paths)`. The session ignores paths that do not include the open document, and it ignores media and binary documents. One change batch is reconciled once: a disk copy that matches the draft is adopted, a clean document reloads, and a dirty document shows the conflict banner.
 
 ## Error model
 
@@ -119,21 +119,23 @@ The seam normalises every rejection into one `ApiError` with `kind`, `message` a
 
 | What | Where |
 |---|---|
-| Roots, active root, editor settings, shortcut overrides | `~/.config/mdlite/mdlite.json` (`%USERPROFILE%\.config\mdlite\mdlite.json` on Windows) |
+| Root folders, active roots, editor settings, shortcut overrides | `~/.config/mdlite/mdlite.json` (`%USERPROFILE%\.config\mdlite\mdlite.json` on Windows) |
 | Config override | `MDLITE_CONFIG` environment variable; it also skips the one-time import |
 | Imported once when the new file does not exist | the earlier OS app-support config if present, then `~/.mdlite.json` |
 | Corrupt config | Renamed to `mdlite.json.corrupt-<timestamp>`; the app then starts from a fresh config (seeded by `MDLITE_ROOT` if set) instead of overwriting the file silently |
 | Permissions | The config file is written with owner-only permissions on Unix and replaced atomically: temporary file, `sync_all`, rename |
 | Path choice | `~/.config/mdlite/mdlite.json` is used on every platform on purpose, so the file is easy to find; it is not the OS-specific app config folder |
-| First-run root seed | `MDLITE_ROOT` environment variable; otherwise no root is stored and the app asks for a folder |
+| First-run root seed | `MDLITE_ROOT` environment variable; otherwise no root is stored and the app shows the Open a folder screen |
 | Trash | Flat entries at `<root>/.mdlite-trash/<name>`, with `-<timestamp>` appended only when the name is already taken. A hidden `.mdlite-meta-<hash>.json` beside each entry stores the original path and deletion time. |
 | Uploaded media | `<note folder>/images/`; `<root>/images/` for a temporary file |
 | Table column widths | webview `localStorage`, key `mdlite:table:<file>:<index>` |
 | Vim settings | stored in the app config: leader key, clipboard targets, line numbers, indentation, search and up to 200 remaps |
-| Scroll position | in memory, one ratio per open file |
-| Recents and undo | in memory, for the current session |
+| Scroll position | in memory, one ratio per root and file |
+| Recents and undo | in memory, for the current session; undo is kept per root |
 
 `trash_list` reads the metadata. When metadata is missing, the entry shows `original path unknown` and the trash browser asks for a relative restore path. Restoring, renaming or moving onto an existing path returns `exists`; choose another name or destination.
+
+The config `active` field is an array of root ids. An old config that stored a single id string is read as a one-root active set. A missing or empty-string `active` value activates every configured root; an explicit empty array keeps no roots active. An empty `roots` array is valid; the app then shows the open-a-folder screen and does not open a folder picker by itself.
 
 Editor settings are `vimEnabled`, `vimLeader`, the three clipboard targets, `vimKeepSelection`, `vimRemaps`, `scrollOff`, `lineNumbers`, `tabSize`, `indentWidth`, `insertSpaces`, `ignoreCase`, `smartCase`, `wordWrap`, `mainWidth`, `sidebarWidth`, `showModeToggle` and `showPenButton`. The Vim-derived settings (`lineNumbers`, `scrollOff`, `tabSize`, `indentWidth`, `insertSpaces`, `ignoreCase`, `smartCase`, the clipboard targets and the remaps) apply only while `vimEnabled` is true; `vimConfig.ts` returns fixed defaults otherwise. `mainWidth` defaults to 100 and is clamped to 50–100. `sidebarWidth` defaults to 296, is 0 (hidden) or clamped to 230–600, and 0 hides the sidebar; `App.tsx` writes it to the `--sidebar-width` CSS variable and the drag handle saves the same setting. `showModeToggle` and `showPenButton` default to true and only hide the floating buttons; their shortcuts stay active. `App.tsx` measures the main pane and reads the current view's cap from the stylesheet (the view root's `max-width`, or the CodeMirror content's when the view is the editor), then sets the `.main-zoom` wrapper to the smaller of the two in px and sets matching horizontal padding on `.main-body` to centre it, so the setting affects the folder view, editor, Markdown view, trash and Settings. The cap is only ever read from a CSS value, never from a live element width, because the element is sized from the cap. The same wrapper carries the main-area zoom: `src/lib/mainZoom.ts` holds the limits and the layout math, and when the zoomed page outgrows the pane the padding reaches `0` and `.main-body` scrolls sideways from the page's left edge. An open Excalidraw drawing or an HTML preview in view mode adds the `full` class to `.main-body` and uses the full main area width; Excalidraw keeps its own zoom, while HTML view handles its own preview zoom and the app's main zoom leaves it alone.
 
@@ -142,7 +144,7 @@ Editor settings are `vimEnabled`, `vimLeader`, the three clipboard targets, `vim
 | Path | Responsibility |
 |---|---|
 | `src/main.tsx` | Mounts the React app and imports the self-test when `VITE_MDLITE_SELFTEST=1` |
-| `src/App.tsx` | View state (tree, recents, overlays), routing between views, global shortcuts and temporary-file drops |
+| `src/App.tsx` | View state (active roots, per-root trees, recents, overlays), routing between views, global shortcuts and temporary-file drops |
 | `src/api.ts` | The only Tauri seam; the `Api` interface, the desktop adapter and error normalization |
 | `src/styles.css` | All application CSS, `:root` tokens and layout |
 | `src/assets/logo.png` | Sidebar logo generated by `npm run icons` |
@@ -151,7 +153,7 @@ Editor settings are `vimEnabled`, `vimLeader`, the three clipboard targets, `vim
 | `src/components/Editor.tsx` | CodeMirror editor, media drop and Vim wiring |
 | `src/components/ExcalidrawView.tsx` | Lazy-loaded Excalidraw canvas |
 | `src/components/HtmlView.tsx` | Sandboxed HTML preview |
-| `src/components/FileTree.tsx` | Sidebar tree, filters, selection and context menu |
+| `src/components/FileTree.tsx` | Sidebar tree with normal root rows, filters, selection, drag-move and context menu |
 | `src/components/FindBar.tsx` | Find bar for the reading view: input, match count, previous/next and close |
 | `src/components/FolderView.tsx` | Table for the current folder |
 | `src/components/MarkdownView.tsx` | Rendered Markdown view |
@@ -210,7 +212,7 @@ Editor settings are `vimEnabled`, `vimLeader`, the three clipboard targets, `vim
 | `src-tauri/src/paths.rs` | Path jail, canonical relative paths, ignore rules, media name checks |
 | `src-tauri/src/search.rs` | `rg` JSON stream and the pure-Rust fallback |
 | `src-tauri/src/settings.rs` | App settings model and validation |
-| `src-tauri/src/state.rs` | Combined config, active root, config path, home directory helpers |
+| `src-tauri/src/state.rs` | Combined config, root list, active roots, watcher registry, config path, home directory helpers |
 | `src-tauri/src/tree.rs` | Recursive tree build with a 20,000-entry budget |
 | `src-tauri/src/watch.rs` | Recursive watcher, debounce and `fs-change` event |
 | `src-tauri/build.rs` | Tauri build script |

@@ -1,7 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent } from 'react'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { AbsPath, AppSettings, RelPath, RootEntry, TreeNode } from '../shared/types'
+import type { AbsPath, AppSettings, RelPath, RootEntry, RootedPath, TreeNode } from '../shared/types'
 import { api } from './api'
 import { Editor } from './components/Editor'
 import { FileTree, type FileTreeHandle } from './components/FileTree'
@@ -17,13 +17,13 @@ import { FindBar } from './components/FindBar'
 import { PenOverlay } from './components/PenOverlay'
 import { defaultAppSettings } from './lib/settings'
 import { askConfirm, askFolder, askPrompt, askSave, isDialogOpen } from './lib/dialogs'
-import { createFileOperations } from './lib/fileOperations'
+import { createFileOperations, type FileOperations } from './lib/fileOperations'
 import { createSession, type SessionDialogs } from './lib/session'
 import { useSessionSnapshot } from './lib/useSession'
 import logoUrl from './assets/logo.png'
 import { fileType, formatKind } from './lib/fileType'
 import { formatRelativeTime } from './lib/format'
-import { absPath, ancestors, baseName, dirname, fileName, isSameOrInside, relPath, remapPath } from './lib/paths'
+import { absPath, ancestors, baseName, dirname, fileName, isSameOrInside, relPath, remapPath, rootedKey, rootedPath } from './lib/paths'
 import { editorSettingsFromApp } from './lib/vimConfig'
 import { isMacPlatform, isRecordingShortcut, matchesCommand } from './lib/shortcuts'
 import { appShortcutAllowed } from './lib/keyboard'
@@ -59,23 +59,22 @@ interface JumpTarget {
 }
 
 export default function App() {
-  const [tree, setTree] = useState<TreeNode[]>([])
+  const [trees, setTrees] = useState<Record<string, TreeNode[]>>({})
   const [treeTick, setTreeTick] = useState(0)
-  const [expanded, setExpanded] = useState<Set<RelPath>>(() => new Set())
-  const [selected, setSelected] = useState<RelPath | null>(null)
-  const [currentDir, setCurrentDir] = useState<RelPath>(() => relPath(''))
+  const [expanded, setExpanded] = useState<Record<string, Set<RelPath>>>({})
+  const [selected, setSelected] = useState<RootedPath | null>(null)
+  const [currentDirs, setCurrentDirs] = useState<Record<string, RelPath>>({})
   const [error, setError] = useState<string | null>(null)
   const [palette, setPalette] = useState<PaletteMode | null>(null)
   const [jump, setJump] = useState<JumpTarget | null>(null)
   const [savedFlash, setSavedFlash] = useState(false)
   const [copiedAt, setCopiedAt] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
-  const [recents, setRecents] = useState<RelPath[]>([])
-  const [cycle, setCycle] = useState<{ items: RelPath[]; index: number } | null>(null)
-  const [rootName, setRootName] = useState('notes')
-  const [rootPath, setRootPath] = useState<AbsPath>(() => absPath(''))
+  const [recents, setRecents] = useState<RootedPath[]>([])
+  const [cycle, setCycle] = useState<{ items: RootedPath[]; index: number } | null>(null)
   const [roots, setRoots] = useState<RootEntry[]>([])
-  const [activeRootId, setActiveRootId] = useState('')
+  const [activeRootIds, setActiveRootIds] = useState<string[]>([])
+  const [focusedRootId, setFocusedRootId] = useState('')
   const [infoReady, setInfoReady] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showTrash, setShowTrash] = useState(false)
@@ -103,10 +102,9 @@ export default function App() {
   const insertTextRef = useRef<((text: string) => void) | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const settingsButtonRef = useRef<HTMLButtonElement>(null)
-  const firstRunPromptRef = useRef(false)
 
   const focusOnReadyRef = useRef(false)
-  const scrollRatios = useRef(new Map<RelPath, number>())
+  const scrollRatios = useRef(new Map<string, number>())
   const scrollRef = useRef<HTMLDivElement>(null)
   const htmlViewRef = useRef<HtmlViewHandle>(null)
   const mainRef = useRef<HTMLElement>(null)
@@ -131,22 +129,25 @@ export default function App() {
   const cycleRef = useRef(cycle)
   cycleRef.current = cycle
 
-  const treeRef = useRef(tree)
-  treeRef.current = tree
+  const treesRef = useRef(trees)
+  treesRef.current = trees
 
-  const selectedRef = useRef<RelPath | null>(selected)
+  const selectedRef = useRef<RootedPath | null>(selected)
   selectedRef.current = selected
 
-  const activeRootIdRef = useRef(activeRootId)
-  activeRootIdRef.current = activeRootId
+  const focusedRootIdRef = useRef(focusedRootId)
+  focusedRootIdRef.current = focusedRootId
+
+  const activeRootIdsRef = useRef(activeRootIds)
+  activeRootIdsRef.current = activeRootIds
 
   const session = useMemo(
     () =>
       createSession({
         api,
         dialogs: sessionDialogs,
-        lookup: (path) => {
-          const node = findNode(treeRef.current, path)
+        lookup: (path, rootId) => {
+          const node = findNode(treesRef.current[rootId ?? focusedRootIdRef.current] ?? [], path)
           return node ? { mtime: node.mtime, size: node.size } : null
         },
       }),
@@ -156,9 +157,10 @@ export default function App() {
   const { document: doc, draft, mode, status, conflict, scratch, loadError, dirty, savedAt, changeTick } =
     sessionState
 
-  const activePath = scratch ? scratch.name : selected
+  const activePath = scratch ? scratch.name : selected?.path ?? null
   const activeType = activePath ? fileType(activePath) : null
   const kind = activeType?.kind ?? null
+  const docApi = doc ? api.forRoot(doc.rootId || focusedRootId) : null
   const penEnabled = penAvailable({ hasDocument: doc !== null, mode, kind, showSettings, showTrash })
 
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
@@ -167,15 +169,35 @@ export default function App() {
   const settingsSeqRef = useRef(0)
   const settingsFlushRef = useRef<(() => void) | null>(null)
 
-  const files = useMemo(() => collectFiles(tree), [tree])
+  const activeRoots = useMemo(
+    () => roots.filter((root) => activeRootIds.includes(root.id)),
+    [roots, activeRootIds],
+  )
+  const rootApis = useMemo(
+    () => new Map(roots.map((root) => [root.id, api.forRoot(root.id)])),
+    [roots],
+  )
+  const treeRoots = useMemo(
+    () => activeRoots.map((root) => ({ root, nodes: trees[root.id] ?? [] })),
+    [activeRoots, trees],
+  )
+  const paletteRoots = useMemo(
+    () =>
+      activeRoots.map((root) => ({
+        root,
+        files: collectFiles(trees[root.id] ?? []),
+      })),
+    [activeRoots, trees],
+  )
+  const focusedRoot = activeRoots.find((root) => root.id === focusedRootId) ?? activeRoots[0] ?? null
+  const currentDir = focusedRoot ? currentDirs[focusedRoot.id] ?? relPath('') : relPath('')
+  const visibleRecents = recents.filter((item) => activeRootIds.includes(item.rootId))
 
   const refreshInfo = useCallback(async () => {
     try {
       const info = await api.info()
-      setRootName(info.name)
-      setRootPath(info.root)
       setRoots(info.roots)
-      setActiveRootId(info.id)
+      setActiveRootIds(info.active)
     } catch {
       return
     } finally {
@@ -205,28 +227,45 @@ export default function App() {
   }, [settings.sidebarWidth])
 
   useEffect(() => {
+    if (!activeRootIds.includes(focusedRootId)) {
+      setFocusedRootId(activeRootIds[0] ?? '')
+    }
+  }, [activeRootIds, focusedRootId])
+
+  useEffect(() => {
     if (!infoReady) return
-    if (!activeRootId) {
-      setTree([])
+    if (!activeRootIds.length) {
+      setTrees({})
       return
     }
     let alive = true
-    api
-      .tree()
-      .then((result) => {
-        if (alive) setTree(result.nodes)
-      })
-      .catch((err: Error) => {
-        if (alive) setError(err.message)
-      })
+    void (async () => {
+      const results = await Promise.all(
+        activeRootIds.map(async (id) => {
+          try {
+            return { id, nodes: (await api.forRoot(id).tree()).nodes }
+          } catch (error) {
+            return { id, error: error instanceof Error ? error : new Error(String(error)) }
+          }
+        }),
+      )
+      if (!alive) return
+      const next: Record<string, TreeNode[]> = {}
+      for (const result of results) {
+        if (result.nodes) next[result.id] = result.nodes
+      }
+      setTrees(next)
+      const failed = results.find((result) => result.error)
+      if (failed?.error) setError(failed.error.message)
+    })()
     return () => {
       alive = false
     }
-  }, [treeTick, activeRootId, infoReady])
+  }, [treeTick, infoReady, activeRootIds.join('\u0000')])
 
   useEffect(() => {
     if (selected) {
-      void session.open(selected)
+      void session.open(selected.path, selected.rootId)
       return
     }
     if (!session.getSnapshot().scratch) void session.close()
@@ -324,8 +363,9 @@ export default function App() {
   }, [])
 
   const rememberScroll = useCallback(() => {
-    const path = session.getSnapshot().document?.path ?? selectedRef.current
-    if (path) scrollRatios.current.set(path, readScrollRatio())
+    const current = session.getSnapshot().document
+    const target = current ? rootedPath(current.rootId, current.path) : selectedRef.current
+    if (target) scrollRatios.current.set(rootedKey(target), readScrollRatio())
   }, [session, readScrollRatio])
 
   const penContentScrollTop = useCallback(() => {
@@ -366,8 +406,8 @@ export default function App() {
 
   useEffect(() => {
     if (status !== 'ready' || !doc) return
-    applyScrollRatio(scrollRatios.current.get(doc.path) ?? 0)
-  }, [status, doc?.path, applyScrollRatio])
+    applyScrollRatio(scrollRatios.current.get(rootedKey({ rootId: doc.rootId, path: doc.path })) ?? 0)
+  }, [status, doc?.path, doc?.rootId, applyScrollRatio])
 
   const save = useCallback(
     async (force = false): Promise<boolean> => {
@@ -383,29 +423,44 @@ export default function App() {
 
   const confirmSave = useCallback(async (): Promise<boolean> => session.settle(), [session])
 
-  const operations = useMemo(
-    () =>
-      createFileOperations({
-        api,
-        dialogs: { askConfirm, askPrompt, askFolder },
-        session: { rename: session.rename, remove: session.remove },
-        rootId: () => activeRootIdRef.current,
-        settle: confirmSave,
-        folders: () => collectFolders(treeRef.current),
-        exists: (path) => collectPaths(treeRef.current).has(path),
-      }),
-    [session, confirmSave, activeRootId],
+  const operationsRef = useRef(new Map<string, FileOperations>())
+  const operationsFor = useCallback(
+    (rootId: string) => {
+      let operations = operationsRef.current.get(rootId)
+      if (!operations) {
+        operations = createFileOperations({
+          api: api.forRoot(rootId),
+          dialogs: { askConfirm, askPrompt, askFolder },
+          session: {
+            rename: (from, to) => session.rename(from, to, rootId),
+            remove: (path) => session.remove(path, rootId),
+          },
+          rootId: () => rootId,
+          settle: confirmSave,
+          folders: () => collectFolders(treesRef.current[rootId] ?? []),
+          exists: (path) => collectPaths(treesRef.current[rootId] ?? []).has(path),
+        })
+        operationsRef.current.set(rootId, operations)
+      }
+      return operations
+    },
+    [session, confirmSave],
   )
 
   const selectFile = useCallback(
-    async (path: RelPath, target?: JumpTarget, focusMain = true) => {
+    async (target: RootedPath, jumpTarget?: JumpTarget, focusMain = true) => {
       if (!(await confirmSave())) return
       rememberScroll()
-      if (path === selectedRef.current && session.getSnapshot().document) {
+      const current = selectedRef.current
+      if (
+        current?.rootId === target.rootId &&
+        current.path === target.path &&
+        session.getSnapshot().document
+      ) {
         setShowSettings(false)
         setShowTrash(false)
         session.setMode('view')
-        setJump(target ?? null)
+        setJump(jumpTarget ?? null)
         requestAnimationFrame(() => {
           const frame = scrollRef.current?.querySelector<HTMLIFrameElement>('.html-frame')
           if (frame) frame.focus()
@@ -415,31 +470,32 @@ export default function App() {
         return
       }
       setPenOpen(false)
-      const dir = dirname(path)
       focusOnReadyRef.current = focusMain
       setShowSettings(false)
       setShowTrash(false)
-      setSelected(path)
-      setCurrentDir(dir)
-      setJump(target ?? null)
+      setFocusedRootId(target.rootId)
+      setSelected(target)
+      setCurrentDirs((prev) => ({ ...prev, [target.rootId]: dirname(target.path) }))
+      setJump(jumpTarget ?? null)
       setExpanded((prev) => {
-        const next = new Set(prev)
-        for (const ancestor of ancestors(path)) next.add(ancestor)
-        return next
+        const next = new Set(prev[target.rootId] ?? [])
+        next.add(relPath(''))
+        for (const ancestor of ancestors(target.path)) next.add(ancestor)
+        return { ...prev, [target.rootId]: next }
       })
     },
     [confirmSave, session, rememberScroll],
   )
 
   const selectFileFromTree = useCallback(
-    (path: RelPath, focusMain = true) => {
-      void selectFile(path, undefined, focusMain)
+    (rootId: string, path: RelPath, focusMain = true) => {
+      void selectFile(rootedPath(rootId, path), undefined, focusMain)
     },
     [selectFile],
   )
 
   const openDir = useCallback(
-    async (dir: RelPath) => {
+    async (rootId: string, dir: RelPath) => {
       if (!(await confirmSave())) return
       rememberScroll()
       setPenOpen(false)
@@ -448,15 +504,17 @@ export default function App() {
       setShowTrash(false)
       void session.close()
       setSelected(null)
-      setCurrentDir(dir)
+      setFocusedRootId(rootId)
+      setCurrentDirs((prev) => ({ ...prev, [rootId]: dir }))
       setJump(null)
       setExpanded((prev) => {
-        const next = new Set(prev)
+        const next = new Set(prev[rootId] ?? [])
+        next.add(relPath(''))
         if (dir) {
           next.add(dir)
           for (const ancestor of ancestors(dir)) next.add(ancestor)
         }
-        return next
+        return { ...prev, [rootId]: next }
       })
     },
     [confirmSave, session, rememberScroll],
@@ -464,15 +522,20 @@ export default function App() {
 
   const closeFile = useCallback(async () => {
     const snapshot = session.getSnapshot()
-    const openPath = snapshot.document?.path ?? selectedRef.current
+    const openPath = snapshot.document
+      ? rootedPath(snapshot.document.rootId, snapshot.document.path)
+      : selectedRef.current
     if (!openPath) return
     if (!(await confirmSave())) return
     rememberScroll()
     setPenOpen(false)
-    const folder = snapshot.scratch ? null : dirname(openPath)
+    const folder = snapshot.scratch ? null : dirname(openPath.path)
+    const rootId = openPath.rootId
     await session.close()
     setSelected(null)
-    if (folder !== null) setCurrentDir(folder)
+    if (folder !== null && rootId) {
+      setCurrentDirs((prev) => ({ ...prev, [rootId]: folder }))
+    }
     setJump(null)
     requestAnimationFrame(() => scrollRef.current?.focus())
   }, [confirmSave, session, rememberScroll])
@@ -481,7 +544,9 @@ export default function App() {
     const current = session.getSnapshot().document
     if (!current) return null
     try {
-      const result = await api.upload(dirname(current.path), file)
+      const rootId = current.rootId || focusedRootIdRef.current
+      if (!rootId) throw new Error('open a folder before inserting media')
+      const result = await api.forRoot(rootId).upload(dirname(current.path), file)
       const isVideo = /\.(mp4|webm|mov|m4v|ogv)$/i.test(result.path)
       return isVideo
         ? `\n<video controls src="${result.path}"></video>\n`
@@ -534,7 +599,7 @@ export default function App() {
     const ratio = readScrollRatio()
     const next = state.mode === 'view' ? 'edit' : 'view'
     if (next === 'view' && !(await confirmSave())) return
-    if (path) scrollRatios.current.set(path, ratio)
+    if (path) scrollRatios.current.set(rootedKey(path), ratio)
     session.setMode(next)
     applyScrollRatio(ratio)
     requestAnimationFrame(() => {
@@ -543,7 +608,7 @@ export default function App() {
     })
   }, [readScrollRatio, applyScrollRatio, confirmSave, session])
 
-  const resetForRoot = useCallback(() => {
+  const resetWorkspace = useCallback(() => {
     focusOnReadyRef.current = false
     void session.reset()
     setPenOpen(false)
@@ -551,34 +616,37 @@ export default function App() {
     setCycle(null)
     scrollRatios.current.clear()
     setSelected(null)
-    setCurrentDir(relPath(''))
+    setCurrentDirs({})
     setShowSettings(false)
     setShowTrash(false)
-    setExpanded(new Set())
+    setExpanded({})
     setJump(null)
     setTreeTick((value) => value + 1)
   }, [session])
 
-  const switchRoot = useCallback(
-    async (id: string) => {
-      if (!(await confirmSave())) return
-      await api.setRoot(id)
+  const setRootActive = useCallback(
+    async (id: string, active: boolean) => {
+      const current = session.getSnapshot().document
+      const closesOpen = !active && current?.rootId === id
+      if (closesOpen && !(await confirmSave())) return
+      await api.setRootActive(id, active)
+      if (closesOpen) {
+        await session.close()
+        setSelected(null)
+      }
       await refreshInfo()
-      resetForRoot()
+      setTreeTick((value) => value + 1)
     },
-    [refreshInfo, resetForRoot, confirmSave],
+    [refreshInfo, confirmSave, session],
   )
 
   const addRootFolder = useCallback(
     async (path: AbsPath, name?: string) => {
-      const { root } = await api.addRoot(path, name)
-      if (!activeRootId) {
-        await api.setRoot(root.id)
-        resetForRoot()
-      }
+      await api.addRoot(path, name)
       await refreshInfo()
+      setTreeTick((value) => value + 1)
     },
-    [refreshInfo, resetForRoot, activeRootId],
+    [refreshInfo],
   )
 
   const chooseRootFolder = useCallback(async () => {
@@ -592,20 +660,35 @@ export default function App() {
     }
   }, [addRootFolder])
 
-  useEffect(() => {
-    if (!infoReady || roots.length > 0 || firstRunPromptRef.current) return
-    firstRunPromptRef.current = true
-    void chooseRootFolder()
-  }, [infoReady, roots.length, chooseRootFolder])
-
   const removeRootFolder = useCallback(
     async (id: string) => {
       if (!(await confirmSave())) return
+      const current = session.getSnapshot().document
       await api.removeRoot(id)
+      if (current?.rootId === id) {
+        await session.close()
+        setSelected(null)
+      }
+      operationsRef.current.delete(id)
+      setTrees((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setExpanded((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setCurrentDirs((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
       await refreshInfo()
-      resetForRoot()
+      setTreeTick((value) => value + 1)
     },
-    [refreshInfo, resetForRoot, confirmSave],
+    [refreshInfo, confirmSave, session],
   )
 
   const openSettings = useCallback(async () => {
@@ -627,11 +710,11 @@ export default function App() {
       closeTrash()
       return
     }
-    if (!activeRootId) return
+    if (!focusedRoot) return
     if (!(await confirmSave())) return
     setShowSettings(false)
     setShowTrash(true)
-  }, [activeRootId, confirmSave, showTrash, closeTrash])
+  }, [focusedRoot, confirmSave, showTrash, closeTrash])
 
   const closeSettings = useCallback(() => {
     setShowSettings(false)
@@ -764,7 +847,7 @@ export default function App() {
   const closePalette = useCallback(() => setPalette(null), [])
 
   const openRecentFiles = useCallback(() => {
-    const items = recentsRef.current
+    const items = recentsRef.current.filter((item) => activeRootIdsRef.current.includes(item.rootId))
     if (!items.length) return
     setCycle({ items, index: 0 })
   }, [])
@@ -1048,14 +1131,14 @@ export default function App() {
   }, [setZoom])
 
   useEffect(() => {
-    const path = doc?.path ?? null
+    const path = doc ? `${doc.rootId}:${doc.path}` : null
     if (zoomPathRef.current === path) return
     zoomPathRef.current = path
     mainZoomRef.current = 1
     zoomAnchorRef.current = null
     setMainZoom(1)
     setPenOpen(false)
-  }, [doc?.path])
+  }, [doc?.path, doc?.rootId])
 
   useEffect(() => {
     if (penOpen && !penEnabled) setPenOpen(false)
@@ -1272,7 +1355,9 @@ export default function App() {
         return
       }
 
-      const items = current?.items ?? recentsRef.current
+      const items = (current?.items ?? recentsRef.current).filter((item) =>
+        activeRootIdsRef.current.includes(item.rootId),
+      )
       if (items.length === 0) return
       const direction = action === 'previous' ? -1 : 1
 
@@ -1312,13 +1397,23 @@ export default function App() {
     return () => unlisten?.()
   }, [confirmSave])
 
+  const refreshTree = useCallback(async (rootId: string) => {
+    try {
+      const result = await api.forRoot(rootId).tree()
+      setTrees((prev) => ({ ...prev, [rootId]: result.nodes }))
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
   useEffect(() => {
-    const unsubscribe = api.subscribeChanges((paths) => {
-      setTreeTick((value) => value + 1)
-      void session.reconcileDisk(paths)
+    const unsubscribe = api.subscribeChanges(({ rootId, paths }) => {
+      void refreshTree(rootId)
+      const current = session.getSnapshot().document
+      if (current?.rootId === rootId) void session.reconcileDisk(paths)
     })
     return unsubscribe
-  }, [session])
+  }, [session, refreshTree])
 
   useEffect(() => {
     if (!error) return
@@ -1335,11 +1430,12 @@ export default function App() {
   }, [savedAt, session])
 
   useEffect(() => {
-    const path = doc?.path
-    if (!path || scratch || doc?.binary) return
-    if (fileType(path).media) return
-    setRecents((prev) => [path, ...prev.filter((entry) => entry !== path)].slice(0, 5))
-  }, [doc?.path, doc?.binary, scratch])
+    if (!doc || scratch || doc.binary) return
+    if (fileType(doc.path).media) return
+    const entry = rootedPath(doc.rootId, doc.path)
+    const key = rootedKey(entry)
+    setRecents((prev) => [entry, ...prev.filter((item) => rootedKey(item) !== key)].slice(0, 5))
+  }, [doc, scratch])
 
   useEffect(() => {
     if (!copiedAt) return
@@ -1353,48 +1449,73 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [notice])
 
-  const remapOpenPath = useCallback(
-    (from: RelPath, to: RelPath) => {
-      if (!from || from === to) return
-      const current = selectedRef.current
-      const selected = current && isSameOrInside(current, from) ? remapPath(current, from, to) : current
-      selectedRef.current = selected
-      setSelected(selected)
-      setCurrentDir((dir) => (dir && isSameOrInside(dir, from) ? remapPath(dir, from, to) : dir))
-      setExpanded((prev) => {
-        const next = new Set<RelPath>()
-        for (const path of prev) next.add(remapPath(path, from, to))
-        return next
-      })
-      setRecents((prev) => prev.map((path) => remapPath(path, from, to)))
-      scrollRatios.current = new Map(
-        [...scrollRatios.current].map(([path, ratio]) => [remapPath(path, from, to), ratio]),
+  const remapOpenPath = useCallback((rootId: string, from: RelPath, to: RelPath) => {
+    if (!from || from === to) return
+    const current = selectedRef.current
+    if (current?.rootId === rootId) {
+      const next = rootedPath(
+        rootId,
+        isSameOrInside(current.path, from) ? remapPath(current.path, from, to) : current.path,
       )
-    },
-    [],
-  )
+      selectedRef.current = next
+      setSelected(next)
+    }
+    setCurrentDirs((prev) => {
+      const dir = prev[rootId]
+      if (!dir || !isSameOrInside(dir, from)) return prev
+      return { ...prev, [rootId]: remapPath(dir, from, to) }
+    })
+    setExpanded((prev) => {
+      const set = prev[rootId]
+      if (!set) return prev
+      const next = new Set<RelPath>()
+      for (const path of set) next.add(remapPath(path, from, to))
+      return { ...prev, [rootId]: next }
+    })
+    setRecents((prev) =>
+      prev.map((entry) =>
+        entry.rootId === rootId ? rootedPath(rootId, remapPath(entry.path, from, to)) : entry,
+      ),
+    )
+    scrollRatios.current = new Map(
+      [...scrollRatios.current].map(([key, ratio]) => {
+        const [id, path = ''] = key.split('\u0000')
+        if (id !== rootId) return [key, ratio]
+        return [`${rootId}\u0000${remapPath(relPath(path), from, to)}`, ratio]
+      }),
+    )
+  }, [])
 
-  const removeOpenPath = useCallback(
-    (path: RelPath) => {
-      setCurrentDir((dir) => (dir && isSameOrInside(dir, path) ? dirname(path) : dir))
-      const selected = selectedRef.current
-      if (!selected || !isSameOrInside(selected, path)) return
+  const removeOpenPath = useCallback((rootId: string, path: RelPath) => {
+    setCurrentDirs((prev) => {
+      const dir = prev[rootId]
+      if (!dir || !isSameOrInside(dir, path)) return prev
+      return { ...prev, [rootId]: dirname(path) }
+    })
+    const current = selectedRef.current
+    if (current?.rootId === rootId && isSameOrInside(current.path, path)) {
       selectedRef.current = null
       setSelected(null)
-      setRecents((prev) => prev.filter((entry) => !isSameOrInside(entry, path)))
-      for (const key of [...scrollRatios.current.keys()]) {
-        if (isSameOrInside(key, path)) scrollRatios.current.delete(key)
-      }
-    },
-    [],
-  )
+    }
+    setRecents((prev) =>
+      prev.filter((entry) => entry.rootId !== rootId || !isSameOrInside(entry.path, path)),
+    )
+    for (const key of [...scrollRatios.current.keys()]) {
+      const [id, rest = ''] = key.split('\u0000')
+      if (id === rootId && isSameOrInside(relPath(rest), path)) scrollRatios.current.delete(key)
+    }
+  }, [])
 
-  const onToggle = useCallback((path: RelPath) => {
+  const onToggle = useCallback((rootId: string, path: RelPath) => {
     setExpanded((prev) => {
-      const next = new Set(prev)
+      const current = prev[rootId]
+      if (path === '' && !current) {
+        return { ...prev, [rootId]: new Set<RelPath>() }
+      }
+      const next = new Set(current ?? (path === '' ? [] : [relPath('')]))
       if (next.has(path)) next.delete(path)
       else next.add(path)
-      return next
+      return { ...prev, [rootId]: next }
     })
   }, [])
 
@@ -1448,7 +1569,13 @@ export default function App() {
 
   const body = (() => {
     if (showTrash) {
-      return <TrashView onChanged={() => setTreeTick((value) => value + 1)} onError={setError} />
+      return (
+        <TrashView
+          rootId={focusedRoot?.id ?? ''}
+          onChanged={() => setTreeTick((value) => value + 1)}
+          onError={setError}
+        />
+      )
     }
     if (status === 'loading') return <div className="centered muted">Loading…</div>
     if (status === 'error') {
@@ -1494,31 +1621,38 @@ export default function App() {
     }
 
     if (!doc) {
+      if (!focusedRoot) return <div className="centered muted">No active folders</div>
       return (
         <FolderView
-          nodes={tree}
+          nodes={trees[focusedRoot.id] ?? []}
           shortcuts={settings.shortcuts}
-          dir={currentDir}
-          rootName={rootName}
-          openFile={selected}
-          onOpenDir={openDir}
-          onSelect={selectFile}
+          dir={currentDirs[focusedRoot.id] ?? relPath('')}
+          rootName={focusedRoot.name}
+          openFile={selected?.rootId === focusedRoot.id ? selected.path : null}
+          onOpenDir={(dir) => void openDir(focusedRoot.id, dir)}
+          onSelect={(path) => void selectFile(rootedPath(focusedRoot.id, path))}
           onContextMenu={(path, type, x, y) =>
-            fileTreeRef.current?.openContextMenu(path, type, x, y, focusMain)
+            fileTreeRef.current?.openContextMenu(
+              rootedPath(focusedRoot.id, path),
+              type,
+              x,
+              y,
+              focusMain,
+            )
           }
         />
       )
     }
 
     if (activeType?.media || doc.binary) {
-      return <MediaView path={doc.path} size={doc.size} />
+      return <MediaView path={doc.path} rootApi={docApi!} size={doc.size} />
     }
 
     if (kind === 'excalidraw') {
       return (
         <Suspense fallback={<div className="centered muted">Loading Excalidraw…</div>}>
           <ExcalidrawView
-            key={`${doc.path}:${changeTick}`}
+            key={`${doc.rootId}:${doc.path}:${changeTick}`}
             path={doc.path}
             content={draft}
             editing
@@ -1553,9 +1687,12 @@ export default function App() {
         <HtmlView
           ref={htmlViewRef}
           path={doc.path}
+          rootApi={docApi!}
           content={draft}
           changeTick={changeTick}
-          initialScrollRatio={scrollRatios.current.get(doc.path) ?? 0}
+          initialScrollRatio={
+            scrollRatios.current.get(rootedKey({ rootId: doc.rootId, path: doc.path })) ?? 0
+          }
         />
       )
     }
@@ -1565,14 +1702,15 @@ export default function App() {
         <MarkdownView
           content={draft}
           path={doc.path}
+          rootApi={docApi!}
           query={jump ? [jump.text, jump.query].filter(Boolean) : undefined}
-          onNavigate={selectFile}
+          onNavigate={(path) => void selectFile(rootedPath(doc.rootId, path))}
           onSourceChange={session.setDraft}
         />
       )
     }
 
-    return <MediaView path={doc.path} size={doc.size} />
+    return <MediaView path={doc.path} rootApi={docApi!} size={doc.size} />
   })()
 
   const fullMainWidth = !showSettings && !showTrash && usesFullMainWidth(kind, mode)
@@ -1613,7 +1751,7 @@ export default function App() {
               className="icon-btn"
               title="Recent files"
               aria-label="Recent files"
-              disabled={recents.length === 0}
+              disabled={visibleRecents.length === 0}
               onClick={openRecentFiles}
             >
               <span className="material-symbols-rounded">history</span>
@@ -1625,7 +1763,7 @@ export default function App() {
               type="button"
               className={`icon-btn ${showTrash ? 'active' : ''}`}
               title="Trash"
-              disabled={roots.length === 0}
+              disabled={!focusedRoot}
               onClick={() => void openTrash()}
             >
               <span className="material-symbols-rounded">delete</span>
@@ -1642,27 +1780,35 @@ export default function App() {
           </div>
         </div>
 
-        {roots.length === 0 ? (
-          <div className="tree-placeholder muted">No folder open</div>
+        {activeRoots.length === 0 ? (
+          <div className="tree-placeholder muted">
+            {roots.length === 0 ? 'No folder open' : 'No active folders'}
+          </div>
         ) : (
           <FileTree
             ref={fileTreeRef}
-            key={activeRootId}
-            nodes={tree}
+            roots={treeRoots}
+            rootApis={rootApis}
+            operationsFor={operationsFor}
+            focusedRootId={focusedRootId}
             shortcuts={settings.shortcuts}
-            operations={operations}
             onRemapPath={remapOpenPath}
             onPathRemoved={removeOpenPath}
             focusRef={treeFocusRef}
             selected={selected}
-            currentDir={currentDir}
+            currentDirs={currentDirs}
             expanded={expanded}
             onToggle={onToggle}
-            onSelect={selectFileFromTree}
-            onOpenDir={openDir}
-            onChanged={() => setTreeTick((value) => value + 1)}
+            onSelect={(target, focusMain) => void selectFile(target, undefined, focusMain)}
+            onOpenDir={(target) => void openDir(target.rootId, target.path)}
+            onChanged={refreshTree}
             onError={setError}
-            onCollapseAll={() => setExpanded(new Set())}
+            onCollapseAll={() =>
+              setExpanded(
+                Object.fromEntries(activeRoots.map((root) => [root.id, new Set<RelPath>()])),
+              )
+            }
+            onFocusRoot={setFocusedRootId}
           />
         )}
       </aside>
@@ -1782,18 +1928,26 @@ export default function App() {
             if (showSettings || showTrash || doc || roots.length === 0) return
             if ((event.target as HTMLElement).closest('.file-row')) return
             event.preventDefault()
-            fileTreeRef.current?.openBackgroundMenu(currentDir, event.clientX, event.clientY, focusMain)
+            if (focusedRoot) {
+              fileTreeRef.current?.openBackgroundMenu(
+                focusedRoot.id,
+                currentDir,
+                event.clientX,
+                event.clientY,
+                focusMain,
+              )
+            }
           }}
         >
           <div className="main-zoom" ref={zoomRef} style={zoomStyle}>
             {showSettings ? (
               <SettingsView
                 roots={roots}
-                activeId={activeRootId}
-                activePath={rootPath}
+                activeIds={activeRootIds}
+                focusedPath={focusedRoot?.path ?? absPath('')}
                 settings={settings}
                 settingsPath={settingsPath}
-                onSwitch={switchRoot}
+                onSetActive={setRootActive}
                 onAdd={addRootFolder}
                 onRemove={removeRootFolder}
                 onSettingsChange={updateSettings}
@@ -1821,7 +1975,7 @@ export default function App() {
 
         {doc && (
           <PenOverlay
-            key={doc.path}
+            key={`${doc.rootId}:${doc.path}`}
             active={penOpen && penEnabled}
             scrollRef={scrollRef}
             zoom={zoom}
@@ -1882,21 +2036,24 @@ export default function App() {
             <div className="cycle-hint">
               Recent files — click a file, ⌃N/⌃P to move, Enter to open, Esc to cancel
             </div>
-            {cycle.items.map((path, index) => (
+            {cycle.items.map((item, index) => (
               <button
-                key={path}
+                key={rootedKey(item)}
                 type="button"
                 className={`cycle-item ${index === cycle.index ? 'active' : ''}`}
                 onClick={() => {
                   setCycle(null)
-                  void selectFile(path)
+                  void selectFile(item)
                 }}
               >
                 <span className="material-symbols-rounded cycle-icon">
-                  {fileType(path).kind === 'markdown' ? 'description' : 'code'}
+                  {fileType(item.path).kind === 'markdown' ? 'description' : 'code'}
                 </span>
-                <span className="cycle-name">{baseName(path)}</span>
-                <span className="cycle-dir">{dirname(path) || '/'}</span>
+                <span className="cycle-name">{baseName(item.path)}</span>
+                <span className="cycle-dir">
+                  {roots.find((root) => root.id === item.rootId)?.name ?? ''} /{' '}
+                  {dirname(item.path) || '/'}
+                </span>
               </button>
             ))}
           </div>
@@ -1909,11 +2066,11 @@ export default function App() {
       {palette && (
         <Palette
           mode={palette}
-          files={files}
+          roots={paletteRoots}
           onClose={closePalette}
-          onOpenFile={(path, target) => {
+          onOpenFile={(target, jumpTarget) => {
             setPalette(null)
-            selectFile(path, target)
+            void selectFile(target, jumpTarget)
           }}
         />
       )}

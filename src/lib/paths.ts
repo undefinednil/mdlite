@@ -1,4 +1,4 @@
-import type { AbsPath, RelPath } from '../../shared/types'
+import type { AbsPath, RelPath, RootedPath } from '../../shared/types'
 
 function normalizePath(path: string): string {
   const out: string[] = []
@@ -29,6 +29,14 @@ export function absolutePathFrom(root: string, rel: RelPath): AbsPath {
 export function dirname(path: RelPath): RelPath {
   const idx = path.lastIndexOf('/')
   return idx === -1 ? relPath('') : relPath(path.slice(0, idx))
+}
+
+export function rootedPath(rootId: string, path: RelPath): RootedPath {
+  return { rootId, path }
+}
+
+export function rootedKey(value: RootedPath): string {
+  return `${value.rootId}\u0000${value.path}`
 }
 
 export function baseName(path: string): string {

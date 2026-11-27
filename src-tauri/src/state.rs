@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,11 +21,31 @@ pub struct RootEntry {
     pub path: String,
 }
 
+fn deserialize_active<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ActiveField {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    Ok(match Option::<ActiveField>::deserialize(deserializer)? {
+        Some(ActiveField::One(id)) if id.is_empty() => None,
+        Some(ActiveField::One(id)) => Some(vec![id]),
+        Some(ActiveField::Many(ids)) => Some(ids),
+        None => None,
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub roots: Vec<RootEntry>,
-    pub active: String,
+    #[serde(default, deserialize_with = "deserialize_active", skip_serializing_if = "Option::is_none")]
+    pub active: Option<Vec<String>>,
     pub settings: AppSettings,
 }
 
@@ -32,7 +53,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             roots: Vec::new(),
-            active: String::new(),
+            active: Some(Vec::new()),
             settings: AppSettings::default(),
         }
     }
@@ -40,7 +61,7 @@ impl Default for Config {
 
 pub struct AppState {
     pub config: Mutex<Config>,
-    pub watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    pub watchers: Mutex<HashMap<String, notify::RecommendedWatcher>>,
 }
 
 pub fn home_dir() -> PathBuf {
@@ -154,7 +175,7 @@ fn seed_root() -> Option<RootEntry> {
 fn seed() -> Config {
     let mut config = Config::default();
     if let Some(root) = seed_root() {
-        config.active = root.id.clone();
+        config.active = Some(vec![root.id.clone()]);
         config.roots.push(root);
     }
     config.normalized()
@@ -175,10 +196,17 @@ fn backup_corrupt(path: &Path) -> bool {
 impl Config {
     fn normalized(mut self) -> Self {
         self.settings = self.settings.repair();
-        if self.roots.is_empty() {
-            self.active.clear();
-        } else if !self.roots.iter().any(|root| root.id == self.active) {
-            self.active = self.roots[0].id.clone();
+        let known: Vec<String> = self.roots.iter().map(|root| root.id.clone()).collect();
+        match &mut self.active {
+            Some(active) => {
+                let had_ids = !active.is_empty();
+                active.retain(|id| known.iter().any(|root| root == id));
+                active.dedup();
+                if had_ids && active.is_empty() {
+                    *active = known;
+                }
+            }
+            None => self.active = Some(known),
         }
         self
     }
@@ -255,34 +283,32 @@ impl Config {
         Ok(())
     }
 
-    pub fn active(&self) -> Option<&RootEntry> {
-        self.roots
-            .iter()
-            .find(|root| root.id == self.active)
-            .or_else(|| self.roots.first())
+    pub fn active_ids(&self) -> Vec<String> {
+        self.active.clone().unwrap_or_default()
     }
 
-    pub fn active_path(&self) -> Option<PathBuf> {
-        self.active().map(|root| PathBuf::from(&root.path))
+    pub fn is_active(&self, id: &str) -> bool {
+        self.active_ids().iter().any(|active| active == id)
     }
 
     pub fn list(&self) -> Vec<RootEntry> {
         self.roots.clone()
     }
 
-    pub fn set_active(&mut self, id: &str) -> ApiResult<RootEntry> {
+    pub fn set_active(&mut self, id: &str, active: bool) -> ApiResult<()> {
+        if !self.roots.iter().any(|root| root.id == id) {
+            return Err(ApiError::not_found("unknown root"));
+        }
         let mut next = self.clone();
-        let root = next
-            .roots
-            .iter()
-            .find(|root| root.id == id)
-            .ok_or_else(|| ApiError::not_found("unknown root"))?
-            .clone();
-        real_dir(&root.path)?;
-        next.active = root.id.clone();
+        let mut ids = next.active_ids();
+        ids.retain(|current| current != id);
+        if active {
+            ids.push(id.to_string());
+        }
+        next.active = Some(ids);
         next.persist()?;
         *self = next;
-        Ok(root)
+        Ok(())
     }
 
     pub fn add(&mut self, path: &str, name: Option<String>) -> ApiResult<RootEntry> {
@@ -293,8 +319,17 @@ impl Config {
             .roots
             .iter()
             .find(|root| root.path == resolved_string)
+            .cloned()
         {
-            return Ok(existing.clone());
+            if !self.is_active(&existing.id) {
+                let mut next = self.clone();
+                let mut active = next.active_ids();
+                active.push(existing.id.clone());
+                next.active = Some(active);
+                next.persist()?;
+                *self = next;
+            }
+            return Ok(existing);
         }
 
         let mut next = self.clone();
@@ -312,15 +347,17 @@ impl Config {
             path: resolved_string,
         };
         next.roots.push(root.clone());
+        let mut active = next.active_ids();
+        if !active.iter().any(|id| id == &root.id) {
+            active.push(root.id.clone());
+        }
+        next.active = Some(active);
         next.persist()?;
         *self = next;
         Ok(root)
     }
 
     pub fn remove(&mut self, id: &str) -> ApiResult<()> {
-        if self.roots.len() <= 1 {
-            return Err(ApiError::bad_request("cannot remove the last root"));
-        }
         let mut next = self.clone();
         let index = next
             .roots
@@ -328,9 +365,9 @@ impl Config {
             .position(|root| root.id == id)
             .ok_or_else(|| ApiError::not_found("unknown root"))?;
         next.roots.remove(index);
-        if next.active == id {
-            next.active = next.roots[0].id.clone();
-        }
+        let mut active = next.active_ids();
+        active.retain(|current| current != id);
+        next.active = Some(active);
         next.persist()?;
         *self = next;
         Ok(())
@@ -341,15 +378,31 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             config: Mutex::new(Config::load()),
-            watcher: Mutex::new(None),
+            watchers: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn root_path(&self) -> Option<PathBuf> {
+    pub fn root_path(&self, id: &str) -> Option<PathBuf> {
         self.config
             .lock()
-            .ok()
-            .and_then(|config| config.active_path())
+            .ok()?
+            .roots
+            .iter()
+            .find(|root| root.id == id)
+            .map(|root| PathBuf::from(&root.path))
+    }
+
+    pub fn active_roots(&self) -> Vec<(String, PathBuf)> {
+        let Ok(config) = self.config.lock() else {
+            return Vec::new();
+        };
+        let active = config.active_ids();
+        config
+            .roots
+            .iter()
+            .filter(|root| active.iter().any(|id| id == &root.id))
+            .map(|root| (root.id.clone(), PathBuf::from(&root.path)))
+            .collect()
     }
 
     pub fn settings(&self) -> ApiResult<AppSettings> {
@@ -384,7 +437,7 @@ mod tests {
             "active": "a"
         }"#;
         let config: Config = serde_json::from_str(raw).unwrap();
-        assert_eq!(config.active, "a");
+        assert_eq!(config.active, Some(vec!["a".to_string()]));
         assert_eq!(config.roots.len(), 1);
         assert!(config.settings.vim_enabled);
         assert!(config.settings.word_wrap);
@@ -440,16 +493,48 @@ mod tests {
     fn empty_roots_keep_settings_and_stay_empty() {
         let mut config = Config {
             roots: Vec::new(),
-            active: String::new(),
+            active: Some(Vec::new()),
             settings: AppSettings::default(),
         };
         config.settings.word_wrap = false;
         config.settings.line_numbers = "off".into();
         let normalized = config.normalized();
         assert!(normalized.roots.is_empty());
-        assert!(normalized.active.is_empty());
+        assert_eq!(normalized.active, Some(Vec::new()));
         assert!(!normalized.settings.word_wrap);
         assert_eq!(normalized.settings.line_numbers, "off");
+    }
+
+    #[test]
+    fn reads_multiple_active_roots_and_defaults_missing_active_to_all() {
+        let raw = r#"{
+            "roots": [
+                {"id": "a", "name": "notes", "path": "/tmp/a"},
+                {"id": "b", "name": "work", "path": "/tmp/b"}
+            ],
+            "active": ["a", "b"]
+        }"#;
+        let config: Config = serde_json::from_str(raw).unwrap();
+        assert_eq!(config.active, Some(vec!["a".to_string(), "b".to_string()]));
+
+        let legacy: Config = serde_json::from_str(
+            r#"{"roots":[{"id":"a","name":"notes","path":"/tmp/a"},{"id":"b","name":"work","path":"/tmp/b"}]}"#,
+        )
+        .unwrap();
+        let normalized = legacy.normalized();
+        assert_eq!(normalized.active, Some(vec!["a".to_string(), "b".to_string()]));
+
+        let empty_string: Config = serde_json::from_str(
+            r#"{"roots":[{"id":"a","name":"notes","path":"/tmp/a"}],"active":""}"#,
+        )
+        .unwrap();
+        assert_eq!(empty_string.normalized().active, Some(vec!["a".to_string()]));
+
+        let empty_array: Config = serde_json::from_str(
+            r#"{"roots":[{"id":"a","name":"notes","path":"/tmp/a"}],"active":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(empty_array.normalized().active, Some(Vec::<String>::new()));
     }
 
     #[test]
@@ -465,7 +550,7 @@ mod tests {
                 name: "notes".into(),
                 path: "/tmp/notes".into(),
             }],
-            active: "a".into(),
+            active: Some(vec!["a".into()]),
             settings,
         };
         let normalized = config.normalized();

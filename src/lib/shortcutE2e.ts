@@ -87,7 +87,7 @@ function scroller(): HTMLElement {
 }
 
 function activeRowText(): string {
-  const row = document.querySelector<HTMLElement>('.tree-row.active')
+  const row = document.querySelector<HTMLElement>('.tree-scroll .tree-row.active')
   return row?.textContent?.trim() ?? ''
 }
 
@@ -142,20 +142,76 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     }
   }
 
+  const info = await api.info()
+  const rootApi = api.forRoot(info.active[0] ?? info.roots[0]?.id ?? '')
   const long = Array.from({ length: 240 }, (_, index) => `line ${index}`).join('\n')
   const code = Array.from({ length: 240 }, (_, index) => `code line ${index}`).join('\n')
-  await api
+  await rootApi
     .save(relPath('long.md'), long, 0, 0, contentHash(''), true)
     .catch(() => undefined)
-  await api
+  await rootApi
     .save(relPath('code.txt'), code, 0, 0, contentHash(''), true)
     .catch(() => undefined)
-  await api
+  await rootApi
     .save(relPath('temp/keys/seed.md'), 'seed', 0, 0, contentHash(''), true)
     .catch(() => undefined)
   await waitRow('long.md', 5000).catch(() => undefined)
   await waitRow('code.txt', 5000).catch(() => undefined)
   await waitRow('temp', 5000).catch(() => undefined)
+
+  await record('roots.multiple', async () => {
+    const roots = [...document.querySelectorAll<HTMLElement>('.tree-row[data-path=""]')]
+    if (roots.length < 2) throw new Error(`expected two root rows, found ${roots.length}`)
+    const names = roots.map((row) => row.textContent?.trim() ?? '')
+    if (!names.some((name) => name.includes('A')) || !names.some((name) => name.includes('B'))) {
+      throw new Error(`unexpected root names: ${names.join(', ')}`)
+    }
+    await openFile('second.md')
+    const crumb = document.querySelector('.crumb')?.textContent ?? ''
+    if (!crumb.includes('second.md')) throw new Error('the second root file did not open')
+    return 'two roots are listed and the second root opens files'
+  })
+
+  await record('roots.edit', async () => {
+    const root = [...document.querySelectorAll<HTMLElement>('.tree-row[data-path=""]')].find((item) =>
+      item.textContent?.includes('B'),
+    )
+    if (!root) throw new Error('the second root row is missing')
+    const rootId = root.dataset.rootId
+    root.click()
+    await wait(150)
+    const tree = treeScroll()
+    press(tree, 'a')
+    const { dialog, input } = await openPrompt()
+    setInput(input, 'second-created.md')
+    dialog.querySelector<HTMLButtonElement>('.btn.primary')?.click()
+    await waitGone('.dialog')
+    const row = await waitRow('second-created.md')
+    if (row.dataset.rootId !== rootId) throw new Error('the new file landed in the wrong root')
+    return 'the second root creates files in its own vault'
+  })
+
+  await record('roots.toggle', async () => {
+    const gear = document.querySelector<HTMLButtonElement>('.sidebar-actions button[title="Settings"]')
+    if (!gear) throw new Error('settings button is missing')
+    gear.click()
+    const settings = await waitFor<HTMLElement>('.settings')
+    const toggle = await waitFor<HTMLInputElement>('input[aria-label="Show B in the file tree"]')
+    if (!toggle.checked) throw new Error('the second root should start active')
+    toggle.click()
+    await wait(400)
+    if (document.querySelectorAll('.tree-row[data-path=""]').length !== 0) {
+      throw new Error('hiding the second root left a root row')
+    }
+    toggle.click()
+    await wait(400)
+    if (document.querySelectorAll('.tree-row[data-path=""]').length !== 2) {
+      throw new Error('showing a root did not restore its rows')
+    }
+    press(settings, 'w', { ctrlKey: true })
+    await waitGone('.settings')
+    return 'root visibility toggles the root rows'
+  })
 
   await record('app.focusTree', async () => {
     await openFile('note.md')
@@ -605,7 +661,7 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     const tree = treeScroll()
     press(tree, 'g')
     await wait(50)
-    const first = document.querySelector<HTMLElement>('.tree-row')
+    const first = tree.querySelector<HTMLElement>('.tree-row')
     if (!first || activeRowText() !== first.textContent?.trim()) {
       throw new Error(`active row is ${activeRowText()}`)
     }
@@ -616,7 +672,7 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     const tree = treeScroll()
     press(tree, 'G', { shiftKey: true })
     await wait(50)
-    const rows = document.querySelectorAll<HTMLElement>('.tree-row')
+    const rows = tree.querySelectorAll<HTMLElement>('.tree-row')
     const last = rows[rows.length - 1]
     if (!last || activeRowText() !== last.textContent?.trim()) {
       throw new Error(`active row is ${activeRowText()}`)
@@ -655,18 +711,30 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     await wait(120)
     const twisty = () => treeRow('temp')?.querySelector<HTMLElement>('.tree-twisty')
     if (twisty()?.title !== 'Collapse') throw new Error('filtered folder did not open')
-    tree.focus()
-    press(tree, 'ArrowLeft', { ctrlKey: true })
-    await wait(120)
-    if (twisty()?.title !== 'Expand') throw new Error('Ctrl+Left did not fold the filtered tree')
-    input.focus()
-    setInput(input, '')
-    await wait(120)
+    try {
+      tree.focus()
+      press(tree, 'ArrowLeft', { ctrlKey: true })
+      await wait(120)
+      const root = [...document.querySelectorAll<HTMLElement>('.tree-row[data-path=""]')].find(
+        (row) => row.textContent?.includes('A'),
+      )
+      const folded = root?.querySelector<HTMLElement>('.tree-twisty') ?? twisty()
+      if (folded?.title !== 'Expand') throw new Error('Ctrl+Left did not fold the filtered tree')
+    } finally {
+      input.focus()
+      setInput(input, '')
+      await wait(120)
+      const root = [...document.querySelectorAll<HTMLElement>('.tree-row[data-path=""]')].find(
+        (row) => row.textContent?.includes('A'),
+      )
+      root?.click()
+      await wait(120)
+    }
     return 'filtered tree folded'
   })
 
   await record('asset.text', async () => {
-    const response = await fetch(api.rawUrl(relPath('note.md')))
+    const response = await fetch(rootApi.rawUrl(relPath('note.md')))
     if (!response.ok) throw new Error(`asset read failed: ${response.status}`)
     const text = await response.text()
     if (!text.includes('e2e note')) throw new Error('asset read returned the wrong file')
@@ -719,8 +787,15 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
     if (moved?.title !== 'temp/note.md') {
       throw new Error(`drag move left ${moved?.title ?? 'nothing'}`)
     }
+    const rootA = [...document.querySelectorAll<HTMLElement>('.tree-row[data-path=""]')].find(
+      (item) => item.textContent?.includes('A'),
+    )
     const treeRect = tree.getBoundingClientRect()
-    await drag(moved, tree, treeRect.bottom - 12)
+    await drag(
+      moved,
+      rootA ?? tree,
+      rootA ? rootA.getBoundingClientRect().top + rootA.getBoundingClientRect().height / 2 : treeRect.bottom - 12,
+    )
     const back = treeRow('note.md')
     if (back?.title !== 'note.md') {
       throw new Error(`drag back left ${back?.title ?? 'nothing'}`)
@@ -1046,7 +1121,7 @@ export async function runShortcutChecks(): Promise<ShortcutCheck[]> {
 
   await record('drop.native', async () => {
     await openFile('note.md')
-    const absolute = api.absolutePath(relPath('note.md'))
+    const absolute = rootApi.absolutePath(relPath('note.md'))
     await emit('tauri://drag-drop', { paths: [absolute], position: { x: 0, y: 0 } })
     for (let index = 0; index < 60; index += 1) {
       if (document.querySelector('.scratch-badge')) {

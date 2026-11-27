@@ -7,13 +7,14 @@ use tauri::{AppHandle, Emitter};
 
 use crate::paths::is_ignored;
 
-pub fn start(app: AppHandle, root: PathBuf) -> Option<RecommendedWatcher> {
+pub fn start(app: AppHandle, root_id: String, root: PathBuf) -> Option<RecommendedWatcher> {
     if !root.is_dir() {
         return None;
     }
 
     let (sender, receiver) = channel::<Vec<String>>();
     let watch_root = root.clone();
+    let watch_id = root_id.clone();
 
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let event = match result {
@@ -46,7 +47,7 @@ pub fn start(app: AppHandle, root: PathBuf) -> Option<RecommendedWatcher> {
                     }
                     pending.sort();
                     pending.dedup();
-                    let payload = serde_json::json!({ "paths": pending });
+                    let payload = serde_json::json!({ "rootId": watch_id, "paths": pending });
                     let _ = app.emit("fs-change", payload);
                     pending.clear();
                 }

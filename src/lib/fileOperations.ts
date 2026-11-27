@@ -1,5 +1,5 @@
 import type { RelPath } from '../../shared/types'
-import { ApiError, normalizeApiError, type Api } from '../api'
+import { ApiError, normalizeApiError, type RootApi } from '../api'
 import type { FolderChoice } from './dialogs'
 import { baseName, dirname, joinPath } from './paths'
 
@@ -46,7 +46,7 @@ export interface FileOperationSession {
 }
 
 export interface FileOperationPorts {
-  api: Api
+  api: RootApi
   dialogs: FileOperationDialogs
   session: FileOperationSession
   rootId(): string

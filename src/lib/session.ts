@@ -1,5 +1,5 @@
 import type { FileDoc, RelPath } from '../../shared/types'
-import { normalizeApiError, type Api } from '../api'
+import { normalizeApiError, type Api, type RootApi } from '../api'
 import type { SaveChoice } from './dialogs'
 import { fileType } from './fileType'
 import { absPath, baseName, contentHash, isSameOrInside, relPath, remapPath } from './paths'
@@ -8,6 +8,7 @@ export type SessionStatus = 'idle' | 'loading' | 'ready' | 'error'
 export type SessionMode = 'view' | 'edit'
 
 export interface SessionDocument {
+  rootId: string
   path: RelPath
   content: string
   mtime: number
@@ -38,7 +39,7 @@ export interface SessionSnapshot {
 }
 
 export interface SessionLookup {
-  (path: RelPath): { mtime: number; size: number } | null
+  (path: RelPath, rootId?: string): { mtime: number; size: number } | null
 }
 
 export interface SessionDialogs {
@@ -55,7 +56,7 @@ export interface SessionPorts {
 export interface Session {
   getSnapshot(): SessionSnapshot
   subscribe(listener: () => void): () => void
-  open(path: RelPath): Promise<void>
+  open(path: RelPath, rootId?: string): Promise<void>
   openScratch(name: string, content: string, size: number): Promise<void>
   close(): Promise<void>
   save(force?: boolean): Promise<boolean>
@@ -65,14 +66,15 @@ export interface Session {
   overwrite(): Promise<boolean>
   setDraft(next: string): void
   setMode(mode: SessionMode): void
-  rename(from: RelPath, to: RelPath): Promise<void>
-  remove(path: RelPath): Promise<void>
+  rename(from: RelPath, to: RelPath, rootId?: string): Promise<void>
+  remove(path: RelPath, rootId?: string): Promise<void>
   reset(): Promise<void>
   reconcileDisk(paths: RelPath[]): Promise<void>
 }
 
 export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
   let document: SessionDocument | null = null
+  let rootApi: RootApi | null = null
   let draft = ''
   let mode: SessionMode = 'view'
   let status: SessionStatus = 'idle'
@@ -108,16 +110,18 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
     for (const listener of [...listeners]) listener()
   }
 
-  const open = async (path: RelPath): Promise<void> => {
+  const open = async (path: RelPath, rootId = ''): Promise<void> => {
     const request = ++generation
     scratch = null
     conflict = null
     loadError = null
     mode = 'view'
+    rootApi = api.forRoot(rootId)
 
     if (fileType(path).media) {
-      const meta = lookup(path)
+      const meta = lookup(path, rootId)
       document = {
+        rootId,
         path,
         content: '',
         mtime: meta?.mtime ?? 0,
@@ -136,9 +140,10 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
     publish()
 
     try {
-      const fresh = await api.read(path)
+      const fresh = await rootApi.read(path)
       if (request !== generation) return
       document = {
+        rootId,
         path: fresh.path,
         content: fresh.content,
         mtime: fresh.mtime,
@@ -153,8 +158,9 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
       if (request !== generation) return
       const apiError = normalizeApiError(error)
       if (apiError.kind === 'binary') {
-        const meta = lookup(path)
+        const meta = lookup(path, rootId)
         document = {
+          rootId,
           path,
           content: '',
           mtime: meta?.mtime ?? 0,
@@ -178,7 +184,8 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
   const openScratch = async (name: string, content: string, size: number): Promise<void> => {
     generation += 1
     scratch = { name }
-    document = { path: relPath(name), content, mtime: 0, size, binary: false }
+    rootApi = null
+    document = { rootId: '', path: relPath(name), content, mtime: 0, size, binary: false }
     draft = content
     mode = 'view'
     status = 'ready'
@@ -191,6 +198,7 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
   const clear = (): void => {
     generation += 1
     document = null
+    rootApi = null
     draft = ''
     mode = 'view'
     status = 'idle'
@@ -232,7 +240,7 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
     const savedPath = current.path
     const content = draft
     try {
-      const result = await api.save(
+      const result = await rootApi!.save(
         savedPath,
         content,
         current.mtime,
@@ -242,6 +250,7 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
       )
       if (!document || document.path !== savedPath) return true
       document = {
+        rootId: current.rootId,
         path: result.path,
         content,
         mtime: result.mtime,
@@ -296,10 +305,11 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
     const current = document
     if (!current || scratch) return
     const request = ++generation
-    const fresh = await api.read(current.path)
+    const fresh = await rootApi!.read(current.path)
     if (request !== generation) return
     if (!document || document.path !== current.path) return
     document = {
+      rootId: current.rootId,
       path: fresh.path,
       content: fresh.content,
       mtime: fresh.mtime,
@@ -326,14 +336,16 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
     publish()
   }
 
-  const rename = async (from: RelPath, to: RelPath): Promise<void> => {
+  const rename = async (from: RelPath, to: RelPath, rootId?: string): Promise<void> => {
     if (!document || !from || from === to || !isSameOrInside(document.path, from)) return
+    if (rootId !== undefined && document.rootId !== rootId) return
     document = { ...document, path: remapPath(document.path, from, to) }
     publish()
   }
 
-  const remove = async (path: RelPath): Promise<void> => {
+  const remove = async (path: RelPath, rootId?: string): Promise<void> => {
     if (!document || scratch || !isSameOrInside(document.path, path)) return
+    if (rootId !== undefined && document.rootId !== rootId) return
     clear()
     publish()
   }
@@ -346,6 +358,7 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
   const adopt = (next: FileDoc, replaceDraft: boolean): void => {
     if (!document || document.path !== next.path) return
     document = {
+      rootId: document.rootId,
       path: next.path,
       content: next.content,
       mtime: next.mtime,
@@ -374,7 +387,7 @@ export function createSession({ api, dialogs, lookup }: SessionPorts): Session {
 
     const request = ++generation
     try {
-      const fresh = await api.read(current.path)
+      const fresh = await rootApi!.read(current.path)
       if (request !== generation) return
       if (!document || document.path !== current.path) return
       if (fresh.mtime === document.mtime && fresh.content === document.content) return

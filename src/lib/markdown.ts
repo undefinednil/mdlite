@@ -3,7 +3,6 @@ import MarkdownIt from 'markdown-it'
 import type { Highlighter } from 'shiki'
 import type { RelPath } from '../../shared/types'
 import { resolveRelative } from './paths'
-import { api } from '../api'
 
 const md = new MarkdownIt({ html: true, linkify: true, breaks: true, typographer: false })
 
@@ -65,24 +64,29 @@ interface EnhanceOptions {
   query?: string | string[]
   isCancelled?: () => boolean
   onSourceChange?: (next: string) => void
+  rawUrl?: (path: RelPath) => string
 }
 
 const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv)$/i
 
-function rewriteResources(root: HTMLElement, filePath: RelPath) {
+function rewriteResources(
+  root: HTMLElement,
+  filePath: RelPath,
+  rawUrl?: (path: RelPath) => string,
+) {
   for (const img of Array.from(root.querySelectorAll('img'))) {
     const src = img.getAttribute('src')
     if (!src) continue
     img.dataset.rawSrc = src
     const resolved = resolveRelative(filePath, src)
-    if (resolved) img.setAttribute('src', api.rawUrl(resolved))
+    if (resolved) img.setAttribute('src', rawUrl ? rawUrl(resolved) : resolved)
   }
 
   for (const node of Array.from(root.querySelectorAll<HTMLElement>('video, audio, source'))) {
     const src = node.getAttribute('src')
     if (!src) continue
     const resolved = resolveRelative(filePath, src)
-    if (resolved) node.setAttribute('src', api.rawUrl(resolved))
+    if (resolved) node.setAttribute('src', rawUrl ? rawUrl(resolved) : resolved)
   }
 
   for (const img of Array.from(root.querySelectorAll('img'))) {
@@ -441,7 +445,7 @@ function attachTableResize(root: HTMLElement, filePath: RelPath) {
 export async function enhance(root: HTMLElement, filePath: RelPath, options: EnhanceOptions = {}) {
   const isCancelled = options.isCancelled ?? (() => false)
 
-  rewriteResources(root, filePath)
+  rewriteResources(root, filePath, options.rawUrl)
   attachImageResize(root, options.source ?? '', options.onSourceChange)
   attachTableResize(root, filePath)
   await highlightCode(root, isCancelled)

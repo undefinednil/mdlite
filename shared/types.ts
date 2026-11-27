@@ -50,11 +50,14 @@ export interface RootEntry {
   path: AbsPath
 }
 
+export interface RootedPath {
+  rootId: string
+  path: RelPath
+}
+
 export interface InfoResponse {
-  root: AbsPath
-  name: string
-  id: string
   roots: RootEntry[]
+  active: string[]
 }
 
 export type LineNumberMode = 'off' | 'absolute' | 'relative'

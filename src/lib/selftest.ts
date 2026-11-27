@@ -15,37 +15,42 @@ export async function runSelfTest(): Promise<void> {
     }
   }
 
-  await check('info', async () => {
-    const info = await api.info()
-    return { name: info.name, root: info.root, roots: info.roots.length }
-  })
+  const info = await api.info()
+  const rootId = info.active[0] ?? info.roots[0]?.id ?? ''
+  const rootApi = api.forRoot(rootId)
 
-  const tree = await api.tree().catch(() => ({ nodes: [] as TreeNode[] }))
+  await check('info', async () => ({
+    roots: info.roots.length,
+    active: info.active.length,
+    rootId,
+  }))
+
+  const tree = await rootApi.tree().catch(() => ({ nodes: [] as TreeNode[] }))
   await check('tree', async () => ({ rootEntries: tree.nodes.length }))
 
   const target = collectFiles(tree.nodes)[0] ?? null
 
   if (target) {
     await check('read', async () => {
-      const doc = await api.read(target)
+      const doc = await rootApi.read(target)
       return { path: doc.path, chars: doc.content.length, mtime: doc.mtime }
     })
-    await check('rawUrl', async () => api.rawUrl(target))
+    await check('rawUrl', async () => rootApi.rawUrl(target))
   }
 
   await check('grep', async () => {
-    const result = await api.grep('the')
+    const result = await rootApi.grep('the')
     return { files: result.files.length, tookMs: result.tookMs }
   })
 
   await check('assetImage', async () => {
-    const tree = await api.tree()
+    const tree = await rootApi.tree()
     const images: RelPath[] = []
     walkTree(tree.nodes, (node) => {
       if (node.type === 'file' && /\.(png|jpe?g|gif|webp|svg)$/i.test(node.path)) images.push(node.path)
     })
     if (!images.length) return 'no images in root'
-    const url = api.rawUrl(images[0])
+    const url = rootApi.rawUrl(images[0])
     const loaded = await new Promise<number>((resolve) => {
       const image = new Image()
       image.onload = () => resolve(image.naturalWidth)
@@ -66,7 +71,7 @@ export async function runSelfTest(): Promise<void> {
   })
 
   await check('write', async () => {
-    const saved = await api.save(relPath('temp/__selftest.json'), '', 0, 0, contentHash(''), true)
+    const saved = await rootApi.save(relPath('temp/__selftest.json'), '', 0, 0, contentHash(''), true)
     return saved
   })
 
@@ -104,7 +109,7 @@ export async function runSelfTest(): Promise<void> {
   }
 
   report.finished = new Date().toISOString()
-  await api
+  await rootApi
     .save(relPath('temp/__selftest.json'), JSON.stringify(report, null, 2), 0, 0, contentHash(''), true)
     .catch(() => undefined)
 }

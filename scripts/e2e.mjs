@@ -42,8 +42,24 @@ async function main() {
   if (!fs.existsSync(binary)) throw new Error(`packaged app not found: ${binary}`)
 
   const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'mdlite-e2e-vault-'))
+  const second = fs.mkdtempSync(path.join(os.tmpdir(), 'mdlite-e2e-root-b-'))
   const config = path.join(os.tmpdir(), `mdlite-e2e-${process.pid}.json`)
   fs.writeFileSync(path.join(vault, 'note.md'), '# e2e note\n')
+  fs.writeFileSync(path.join(second, 'second.md'), '# second root\n')
+  fs.writeFileSync(
+    config,
+    JSON.stringify(
+      {
+        roots: [
+          { id: 'root-a', name: 'A', path: vault },
+          { id: 'root-b', name: 'B', path: second },
+        ],
+        active: ['root-a', 'root-b'],
+      },
+      null,
+      2,
+    ),
+  )
   const page = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif}</style></head><body><h1>HTML preview</h1>${Array.from({ length: 80 }, (_, index) => `<p>line ${index}</p>`).join('')}<script>document.body.dataset.ready="yes"</script></body></html>`
   fs.writeFileSync(path.join(vault, 'page.html'), page)
   fs.copyFileSync(path.join(root, 'src', 'assets', 'logo.png'), path.join(vault, 'image.png'))
@@ -97,6 +113,7 @@ async function main() {
   child.kill('SIGTERM')
   fs.closeSync(out)
   fs.rmSync(vault, { recursive: true, force: true })
+  fs.rmSync(second, { recursive: true, force: true })
   fs.rmSync(config, { force: true })
 
   if (!checks.length) throw new Error('the self-test report has no shortcut checks')

@@ -1,21 +1,22 @@
 import type { RelPath } from '../../shared/types'
-import { api } from '../api'
+import type { RootApi } from '../api'
 import { fileType } from '../lib/fileType'
 import { formatSize } from '../lib/format'
 import { baseName } from '../lib/paths'
 
 interface Props {
   path: RelPath
+  rootApi: RootApi
   size: number
 }
 
-export function MediaView({ path, size }: Props) {
+export function MediaView({ path, rootApi, size }: Props) {
   const kind = fileType(path).kind
 
   if (kind === 'image' || kind === 'svg') {
     return (
       <div className="media-view">
-        <img src={api.rawUrl(path)} alt={baseName(path)} />
+        <img src={rootApi.rawUrl(path)} alt={baseName(path)} />
       </div>
     )
   }
@@ -28,7 +29,7 @@ export function MediaView({ path, size }: Props) {
         <div className="binary-meta">
           {formatSize(size)} · no preview for this file type
         </div>
-        <button type="button" className="btn" onClick={() => void api.open(path)}>
+        <button type="button" className="btn" onClick={() => void rootApi.open(path)}>
           Open with default app
         </button>
       </div>

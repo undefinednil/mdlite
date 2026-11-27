@@ -1,11 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
-import { api } from '../api'
+import type { RootApi } from '../api'
 import { HTML_SCROLL_EVENT, htmlBaseUrl, htmlDocument, keyEventInit, shouldForwardKey, type HtmlKeyMessage } from '../lib/htmlDocument'
 import { baseName } from '../lib/paths'
 import type { RelPath } from '../../shared/types'
 
 interface Props {
   path: RelPath
+  rootApi: RootApi
   content: string
   changeTick: number
   initialScrollRatio?: number
@@ -24,14 +25,14 @@ export interface HtmlViewHandle {
 // the app. Relative CSS and classic scripts still load through the base tag.
 // The injected script forwards scroll commands from the app and key events back.
 export const HtmlView = forwardRef<HtmlViewHandle, Props>(function HtmlView(
-  { path, content, changeTick, initialScrollRatio = 0 }: Props,
+  { path, rootApi, content, changeTick, initialScrollRatio = 0 }: Props,
   ref,
 ) {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const ratioRef = useRef(initialScrollRatio)
   const scrollTopRef = useRef(0)
   const [loaded, setLoaded] = useState(false)
-  const url = api.htmlUrl(path)
+  const url = rootApi.htmlUrl(path)
   const srcDoc = useMemo(() => htmlDocument(content, htmlBaseUrl(url)), [content, url])
 
   const post = (message: Record<string, unknown>) => {

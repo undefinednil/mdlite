@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { RelPath, TrashEntry } from '../../shared/types'
 import { api } from '../api'
 import { askConfirm, askPrompt } from '../lib/dialogs'
@@ -7,11 +7,13 @@ import { baseName, relPath } from '../lib/paths'
 import { rowLeading, rowView } from '../lib/row'
 
 interface Props {
+  rootId: string
   onChanged: () => void
   onError: (message: string) => void
 }
 
-export function TrashView({ onChanged, onError }: Props) {
+export function TrashView({ rootId, onChanged, onError }: Props) {
+  const rootApi = useMemo(() => api.forRoot(rootId), [rootId])
   const [entries, setEntries] = useState<TrashEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
@@ -19,13 +21,13 @@ export function TrashView({ onChanged, onError }: Props) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setEntries(await api.trashList())
+      setEntries(await rootApi.trashList())
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
     } finally {
       setLoading(false)
     }
-  }, [onError])
+  }, [onError, rootApi])
 
   useEffect(() => {
     void load()
@@ -47,7 +49,7 @@ export function TrashView({ onChanged, onError }: Props) {
     if (!destination) return
     setBusy(entry.path)
     try {
-      await api.restore(entry.path, destination)
+      await rootApi.restore(entry.path, destination)
       await load()
       onChanged()
     } catch (error) {
@@ -62,7 +64,7 @@ export function TrashView({ onChanged, onError }: Props) {
     if (!(await askConfirm(`Delete "${entry.original}" permanently? This cannot be undone.`))) return
     setBusy(entry.path)
     try {
-      await api.purgeTrash(entry.path)
+      await rootApi.purgeTrash(entry.path)
       await load()
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))

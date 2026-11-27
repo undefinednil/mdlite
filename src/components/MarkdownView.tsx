@@ -1,18 +1,19 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { RelPath } from '../../shared/types'
-import { api } from '../api'
+import { api, type RootApi } from '../api'
 import { enhance, renderMarkdown } from '../lib/markdown'
 import { relPath } from '../lib/paths'
 
 interface Props {
   content: string
   path: RelPath
+  rootApi: RootApi
   query?: string | string[]
   onNavigate: (path: RelPath) => void
   onSourceChange?: (next: string) => void
 }
 
-export function MarkdownView({ content, path, query, onNavigate, onSourceChange }: Props) {
+export function MarkdownView({ content, path, rootApi, query, onNavigate, onSourceChange }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const html = useMemo(() => renderMarkdown(content), [content])
 
@@ -24,12 +25,13 @@ export function MarkdownView({ content, path, query, onNavigate, onSourceChange 
       source: content,
       query,
       onSourceChange,
+      rawUrl: rootApi.rawUrl,
       isCancelled: () => cancelled,
     }).catch((error) => console.error('[mdlite] render', error))
     return () => {
       cancelled = true
     }
-  }, [html, path, query, content, onSourceChange])
+  }, [html, path, query, content, onSourceChange, rootApi])
 
   const handleClick = (event: React.MouseEvent) => {
     const anchor = (event.target as HTMLElement).closest('a')

@@ -1,13 +1,13 @@
 # Features
 
-mdlite works with one active folder of notes at a time. You can keep several folders in the root list and switch between them. There is no server, no import step and no copy of your notes: every read and write goes to the active folder.
+mdlite works with one or more active root folders. You can keep several folders in the root list and choose which ones appear in the sidebar; every active root gets a normal root row in the tree, and a single root hides that row. There is no server, no import step and no copy of your notes: every read and write goes to the root that owns the file.
 
 `⌃` means Control on every platform. `⌘` means Command on macOS and Ctrl on Windows or Linux. The default app shortcuts use Control; tree navigation also accepts Command on macOS. The full shortcut list is in the root [README](../README.md#keyboard).
 
 ## Browsing
 
 - **Folder view.** The main area lists the current folder in a table with Name, Kind, Size and Modified columns. Name, Size and Modified sort when you click their headers; click again to reverse. Name starts A–Z, Size starts smallest first and Modified starts newest first, the same order as the tree. Kind is a label only. Breadcrumbs above the table move back up the folder path. Click a folder to enter it; `j` and `k` move the cursor and Enter opens the row. The cursor starts on the first row when a folder opens.
-- **Sidebar tree.** The whole active folder is loaded once and filtered in the app, so typing in the filter is instant. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list. `Ctrl+←` folds every folder even while a filter is active. Rows show the same per-kind icon as the folder table.
+- **Sidebar tree.** Each active root is loaded once and filtered in the app, so typing in the filter is instant. Root folders are normal tree rows at the top; their contents are indented underneath. With one root the root row is hidden, so the tree looks exactly like a single-folder tree. Folders with matches open automatically, so the tree keeps its shape instead of turning into a flat result list. `Ctrl+←` folds every folder and root row, even while a filter is active. Rows show the same per-kind icon as the folder table.
 - **Tree filters.** Filter by path text in `contains`, `glob` or `regex` mode. Add a modified-date range, kind chips (`md`, `code`, `data`, `image`, `draw`, `other`) and size buckets. Sort by name or modified time; folders stay first and the folder table uses the same order.
 - **Selection.** Shift-click selects a range of tree rows, `⌘`-click or `Ctrl`-click toggles one row, and a plain click clears the selection and opens the row. `⌘A`/`Ctrl+A` selects every visible row and `Esc` clears it. With several rows selected, `d` moves all of them to the trash. The tree, folder table and command palette share one selection model: the tree cursor follows the open file, and a rename or move carries the cursor and selection to the new path. The folder picker in Move keeps its own active row because it lists folders, not notes.
 - **Hidden and ignored items.** Any name that starts with a dot is hidden, along with `.git`, `node_modules`, `.obsidian`, `.trash`, `.cache`, `dist` and `.mdlite-trash`. Symlinks are not followed.
@@ -54,7 +54,7 @@ Editing uses CodeMirror 6 with:
 Save and conflicts:
 
 - There is no auto-save on blur and no save timer. Saves happen from the save shortcut, Vim `:w` (also `:update`, `:wq` and `:wa`), the **Save** choice in the save prompt, and **Overwrite** in the conflict banner.
-- The app asks **Save** / **Don't save** / **Cancel** when the draft differs from the document and you switch file or folder, open Settings or the trash, switch or remove a root, open a temporary file, toggle from edit to view, or close the window. **Cancel** or a failed save keeps the current view.
+- The app asks **Save** / **Don't save** / **Cancel** when the draft differs from the document and you switch file or folder, open Settings or the trash, toggle or remove a root, open a temporary file, toggle from edit to view, or close the window. **Cancel** or a failed save keeps the current view.
 - Each save sends the modification time, size and content hash it loaded. For an existing file, an explicit **Overwrite** is the only way to skip that check.
 - If the file changed on disk while you had unsaved edits, a conflict banner offers **Reload** or **Overwrite**. **Reload** discards the draft and takes the disk version.
 
@@ -91,7 +91,7 @@ These settings apply only while Vim keybindings are on. Turning Vim off disables
 - **Cut, copy, paste.** `x`, `y` and `p` work on the current row and show the pending clipboard item in the tree footer. Paste a copied item into another folder to duplicate it.
 - **Context menu.** Right-click a tree row or a folder-table row for New file, Copy, Paste, Rename, Move to trash, Move, Reveal (Finder on macOS, File Explorer on Windows, the file manager on Linux) and Copy path. New file creates the entry inside a folder, or beside a file; a name ending in `/` creates a folder. Paste puts the copied item beside a file or inside a folder. Copy path writes the absolute path to the system clipboard. Right-clicking the empty space below the rows offers New file and Paste in the folder you are viewing.
 - **Selection delete.** With several rows selected, one confirm moves all of them to the trash. Nested selections are collapsed: selecting a folder and a file inside it deletes the folder once.
-- **Undo.** `u` covers create, rename, move, paste and trash through the same pipeline. It lasts for the current session. Every file operation checks the active root after its dialog; if the folder changed, the operation is cancelled and nothing is written.
+- **Undo.** `u` covers create, rename, move, paste and trash through the same pipeline. It lasts for the current session and is kept per root. Every file operation checks its root after its dialog; if that root was removed, the operation is cancelled and nothing is written.
 - **Close.** The close button in the header, or `Ctrl+W`, closes the open file after the save prompt if it has unsaved changes. The folder view for that file's folder is shown. A temporary file closed this way asks where to save it, unless it has no changes. The same shortcut closes Settings and Trash.
 - **Missing or unreadable files.** If a file cannot be opened, the main area shows a card with an icon, the reason, the path, **Try again** and **Close**. A file that is gone reads "File not found". The close button in the header and `Ctrl+W` work here too, so a failed open never traps the view.
 
@@ -99,7 +99,7 @@ These settings apply only while Vim keybindings are on. Turning Vim off disables
 
 - `⌃E` opens the fuzzy file finder. It ranks paths and highlights the matched characters.
 - `⌃G` searches file contents, with an optional regex toggle.
-- Search is case-insensitive by default and covers only the active root. Hidden folders and the ignore list are skipped.
+- Search is case-insensitive by default and covers every active root. Hidden folders and the ignore list are skipped.
 - Search prefers the `rg` binary when it is installed. `rg` also respects `.gitignore` and `.ignore` files in the root and its subfolders. If `rg` is missing, a built-in scanner reads text files up to 2 MB.
 - Results are capped at 120 files, 6 matches per file and 400 matches total. Long lines are shortened to 240 characters.
 - Choosing a match opens the file and highlights the term in rendered Markdown. Code and text files open without a highlight.
@@ -108,7 +108,7 @@ These settings apply only while Vim keybindings are on. Turning Vim off disables
 
 The gear button opens Settings, with a side menu of five pages:
 
-- **Root folders:** add, switch and remove roots. **Browse…** uses the native folder picker. The last root cannot be removed. The active root is what the tree, search, editor and file operations use. On first run, the app opens the folder picker when no root is configured.
+- **Root folders:** add and remove roots, and toggle which roots are active. Every active root appears as a normal root row in the file tree; all of them are editable and search covers all of them. With one root the root row is hidden. **Browse…** uses the native folder picker. The last root can be removed, and an empty root list is valid. When no root is configured, the app shows the Open a folder screen; choose a folder there or open Settings.
 - **Editor:** turn word wrap on or off, set the main area width, set the sidebar width and choose whether the floating View/Edit and pen buttons appear. The main width is clamped to 50–100% of the main pane and applied as horizontal padding on the whole main body, so it affects the folder view, editor, Markdown view, trash and Settings. Excalidraw drawings and HTML view mode ignore the setting and use the full main area width. The sidebar width is in pixels (0 hides it; drag the left edge or click the resize handle to bring it back). Dragging the sidebar edge updates and saves the same setting. The View/Edit and pen shortcuts keep working when their buttons are hidden.
 - **Vim:** turn Vim keybindings on or off and configure the leader key, clipboard targets, line numbers, scroll offset, indentation, search and remaps. The controls below the switch are disabled while Vim is off, and none of them takes effect: the editor uses fixed defaults (no gutter, 4-space tabs with a 2-space indent, no scroll offset, ignore-case search).
 - **Shortcuts:** click a key and press a new combination. Shortcuts are grouped as Global, Editor and File tree. Backspace clears a key, Esc cancels, and each row can be reset to its default. A binding that is already used is rejected; a duplicate that comes from a hand-edited config is flagged.
@@ -124,7 +124,7 @@ Roots, editor settings and shortcut overrides live in one config file. [Architec
 
 Drop a file the tree opens as text from outside the app onto the window to open it without copying it into the root. The header marks it as `temporary`. `⌃S` opens a native save dialog instead of writing into the folder. Files above 4,000,000 bytes are rejected with "File is too large to open"; the normal text read cap is 8 MiB.
 
-While editing a note in the active folder, dropping or pasting an image or video saves it to an `images/` folder beside the note and inserts the Markdown or `<video>` tag. While editing a temporary file, the media goes to `<root>/images/`, because the temporary file has no folder inside the active folder.
+While editing a note, dropping or pasting an image or video saves it to an `images/` folder beside the note and inserts the Markdown or `<video>` tag. While editing a temporary file, the media goes to the focused root's `images/` folder, because the temporary file has no folder inside a root.
 
 ## Live updates
 

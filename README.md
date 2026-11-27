@@ -39,7 +39,7 @@ src-tauri/            Rust backend
   src/search.rs       ripgrep wrapper plus a pure-Rust fallback
   src/watch.rs        recursive watcher, debounced, emits fs-change
   src/settings.rs     editor settings and shortcut overrides
-  src/state.rs        roots and settings persisted to the config file
+  src/state.rs        root list, active roots and settings persisted to the config file
   src/lib.rs          22 Tauri commands
 src/                  React app
   api.ts              the only seam: invoke() calls into Rust
@@ -54,7 +54,7 @@ Images and video are served through the Tauri asset protocol, because a webview 
 
 ## Behaviour
 
-One root folder is active at a time. The sidebar tree and folder table browse it, Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents. Files can be created, renamed, moved, copied, trashed and restored. Drag a tree row onto a folder to move it, or onto the empty tree space to move it to the root. The sidebar history button opens the recent-files list. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations; the drawing is anchored to the note, follows its scroll and the app's zoom, and stays until the open file changes or the pen is cleared. See [Features](docs/features.md) for each area and its limits.
+One or more root folders can be active at a time. The sidebar shows a root row for each active root, and every root supports the same file operations. With one root the root row is hidden, so its contents look like a normal single-folder tree. Markdown opens in a reading view or in CodeMirror with Vim keybindings, and search covers file names and file contents across the active roots. The root list can be empty; Settings can add folders and toggle which ones appear in the tree. Files can be created, renamed, moved, copied, trashed and restored. Drag a tree row onto a folder to move it, or onto the empty space below a root to move it to that root. The sidebar history button opens the recent-files list. Images, SVG and Excalidraw drawings open in place; videos embedded in Markdown play in the reading view. Dropped text files open as temporary files and are not copied into the folder. A pen button next to the edit toggle turns the main area into a drawing surface for presentations; the drawing is anchored to the note, follows its scroll and the app's zoom, and stays until the open file changes or the pen is cleared. See [Features](docs/features.md) for each area and its limits.
 
 ## Settings
 

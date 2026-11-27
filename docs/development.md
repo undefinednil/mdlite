@@ -97,7 +97,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 - `htmlDocument.test.ts` covers the preview base URL, the injected scroll bridge and the key forwarding rules.
 - `vimScroll.test.ts` covers the Vim half-page scroll when the target line is outside the rendered viewport.
 - `api.test.ts` covers command mapping, error normalization and the injected desktop client.
-- `fakeApi.test.ts` covers the fake adapter contract.
+- `fakeApi.test.ts` covers the fake adapter contract, including separate vaults per root and an empty root list.
 - `fileOperations.test.ts` covers create, rename, move, trash, paste, undo, rollback and the root guard.
 - `fileType.test.ts` covers the extension table, editability, filter groups, icons and the drop predicate.
 - `format.test.ts` covers size, date, deleted-at and recent-time text.
@@ -121,7 +121,7 @@ This catches target-specific code errors but does not produce an installer. Buil
 
 ## Self-test
 
-The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle, button and Ctrl+N/Ctrl+P menu keys, tree drag-move, a native file drop, page close, sidebar width, view-button toggles, the pen shortcut and persistence, editor pen zoom, Ctrl+U and Escape. The `tree.dragMove` check drives the tree's pointer drag, `asset.text` reads a file through the same asset URL that external drops use, and `drop.native` emits Tauri's drag-drop event with an absolute path and verifies the temporary file opens. `tauriConfig.test.ts` guards the `dragDropEnabled: true` setting that keeps external drops flowing. On macOS the runner brings the spawned window to the front; a background webview throttles timers, and the self-test would not finish. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
+The self-test runs inside a packaged build and writes a JSON report. `npm run e2e` builds the packaged app with the self-test flag, runs it against a throwaway vault, and fails when any keyboard-shortcut check fails. The shortcut suite covers every command in the shortcut catalogue, plus the recent-file cycle, button and Ctrl+N/Ctrl+P menu keys, two active roots as normal root rows with file creation, root visibility toggles, tree drag-move, a native file drop, page close, sidebar width, view-button toggles, the pen shortcut and persistence, editor pen zoom, Ctrl+U and Escape. The `tree.dragMove` check drives the tree's pointer drag, `asset.text` reads a file through the same asset URL that external drops use, and `drop.native` emits Tauri's drag-drop event with an absolute path and verifies the temporary file opens. `tauriConfig.test.ts` guards the `dragDropEnabled: true` setting that keeps external drops flowing. On macOS the runner brings the spawned window to the front; a background webview throttles timers, and the self-test would not finish. The first run compiles the release app; later runs can reuse the build with `MDLITE_E2E_SKIP_BUILD=1 npm run e2e`.
 
 The manual steps remain useful when you want to inspect the full report:
 
